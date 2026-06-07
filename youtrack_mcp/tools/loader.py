@@ -159,6 +159,7 @@ def load_all_tools() -> Dict[str, Callable]:
     from youtrack_mcp.tools.users import UserTools
     from youtrack_mcp.tools.search import SearchTools
     from youtrack_mcp.tools.resources import ResourcesTools
+    from youtrack_mcp.tools.reports import ReportTools
 
     # Initialize tool classes
     tool_classes = [
@@ -167,6 +168,7 @@ def load_all_tools() -> Dict[str, Callable]:
         UserTools(),
         SearchTools(),
         ResourcesTools(),
+        ReportTools(),
     ]
 
     # Optionally enable Knowledge Base tools via environment flag

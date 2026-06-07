@@ -30,6 +30,7 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
 venv/
 venv_test/
 ENV/
