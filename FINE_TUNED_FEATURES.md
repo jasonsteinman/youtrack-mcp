@@ -28,7 +28,7 @@ reported separately as `unestimated`.
 | `sprint_squad_report` | Story points per squad, by stage | `sprint_squad_report(squad="Squad A")` |
 
 Both default to the board's **current sprint** if `sprint` is omitted, and to the
-`Dev Board` board if `board` is omitted.
+board named in the `YOUTRACK_DEFAULT_BOARD` environment variable if `board` is omitted.
 
 ## 🏃 Sprint operations
 
@@ -36,22 +36,22 @@ Both default to the board's **current sprint** if `sprint` is omitted, and to th
 |------|--------------|---------|
 | `list_sprints` | List a board's sprints + current sprint | `list_sprints(board="Dev Board")` |
 | `get_sprint_issues` | Issues on a sprint (Stage, Assignee, Story Point) | `get_sprint_issues(sprint="Sprint #91")` |
-| `move_issue_to_sprint` | Move an issue between sprints | `move_issue_to_sprint(issue_id="DEMO-123", target_sprint="Sprint #92", from_sprint="Sprint #91")` |
+| `move_issue_to_sprint` | Move an issue between sprints | `move_issue_to_sprint(issue_id="PROJ-123", target_sprint="Sprint #92", from_sprint="Sprint #91")` |
 
 > On single-sprint boards, adding an issue to a sprint automatically removes it
 > from its previous one, so `move_issue_to_sprint` works even if `from_sprint` is omitted.
 
 ## 👥 Team actions (name-aware)
 
-These resolve a **display name** ("Pat", "Alex") to the right login
+These resolve a **display name** ("Alex", "Sam") to the right login
 automatically — you don't need to know logins. Ambiguous names return candidates.
 
 | Tool | What it does | Example |
 |------|--------------|---------|
-| `whois` | Resolve a name to a login (read-only) | `whois(name="Pat")` |
-| `assign_issue` | Set the Assignee by name | `assign_issue(issue_id="DEMO-123", person="Alex")` |
-| `set_reviewer` | Set the Reviewer by name | `set_reviewer(issue_id="DEMO-123", person="Pat")` |
-| `comment_with_mentions` | Comment and @-mention people by name | `comment_with_mentions(issue_id="DEMO-123", text="please review", mention="Pat, Alex")` |
+| `whois` | Resolve a name to a login (read-only) | `whois(name="Alex")` |
+| `assign_issue` | Set the Assignee by name | `assign_issue(issue_id="PROJ-123", person="Sam")` |
+| `set_reviewer` | Set the Reviewer by name | `set_reviewer(issue_id="PROJ-123", person="Alex")` |
+| `comment_with_mentions` | Comment and @-mention people by name | `comment_with_mentions(issue_id="PROJ-123", text="please review", mention="Alex, Sam")` |
 
 > User-typed fields (Assignee, Reviewer) are written with the correct
 > `MultiUserIssueCustomField` payload, which the upstream updater couldn't handle.
@@ -61,7 +61,7 @@ automatically — you don't need to know logins. Ambiguous names return candidat
 | Tool | What it does | Example |
 |------|--------------|---------|
 | `my_inbox` | Notification proxy: recent issues mentioning you, assigned to you, or you've commented on | `my_inbox(days=7)` |
-| `task_summary` | Compact issue abstraction: status, priority, people, squad, points, recent comments | `task_summary(issue_id="DEMO-123")` |
+| `task_summary` | Compact issue abstraction: status, priority, people, squad, points, recent comments | `task_summary(issue_id="PROJ-123")` |
 
 > YouTrack has no clean "my notifications" REST endpoint, so `my_inbox` builds a
 > practical proxy from recent activity that would have notified you.
@@ -75,6 +75,7 @@ automatically — you don't need to know logins. Ambiguous names return candidat
    YOUTRACK_URL=https://yourworkspace.youtrack.cloud
    YOUTRACK_API_TOKEN=perm-...        # Profile → Account Security → New token
    YOUTRACK_CLOUD=true
+   YOUTRACK_DEFAULT_BOARD=Your Board Name   # default board for reports/sprint tools
    ```
 2. Install dependencies into a virtual environment:
    ```bash
@@ -100,5 +101,6 @@ Then restart Claude and ask, e.g. *"show the squad story-point report for the cu
 
 ## Defaults
 
-The reporting and sprint tools default to the **`Dev Board`** board. Pass a
-`board=` argument to target a different board.
+The reporting and sprint tools read their default board from the
+**`YOUTRACK_DEFAULT_BOARD`** environment variable. Pass a `board=` argument to
+target a different board on any call.

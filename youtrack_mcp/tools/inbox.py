@@ -132,10 +132,10 @@ class InboxTools:
         Get a compact, human-readable summary of an issue: status, priority,
         people, squad, story points, and the most recent comments.
 
-        FORMAT: task_summary(issue_id="DEMO-123", comments=3)
+        FORMAT: task_summary(issue_id="PROJ-123", comments=3)
 
         Args:
-            issue_id: Readable issue id, e.g. "DEMO-123".
+            issue_id: Readable issue id, e.g. "PROJ-123".
             comments: How many recent comments to include (default: 3).
 
         Returns:
@@ -211,11 +211,11 @@ class InboxTools:
                 "description": (
                     "Compact summary of an issue: status (Stage), priority, assignee, reviewer, "
                     "squad, story points, and recent comments. "
-                    'Example: task_summary(issue_id="DEMO-123", comments=3).'
+                    'Example: task_summary(issue_id="PROJ-123", comments=3).'
                 ),
                 "function": self.task_summary,
                 "parameter_descriptions": {
-                    "issue_id": "Readable issue id e.g. 'DEMO-123'",
+                    "issue_id": "Readable issue id e.g. 'PROJ-123'",
                     "comments": "Number of recent comments to include (default: 3)",
                 },
             },

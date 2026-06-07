@@ -8,6 +8,7 @@ New capabilities the stock MCP lacks:
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from youtrack_mcp.api.client import YouTrackClient, ResourceNotFoundError
@@ -17,7 +18,8 @@ from youtrack_mcp.utils import format_json_response
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BOARD = "Dev Board"
+# Set YOUTRACK_DEFAULT_BOARD in your environment, or pass `board` on each call.
+DEFAULT_BOARD = os.getenv("YOUTRACK_DEFAULT_BOARD", "")
 
 
 class SprintTools:
@@ -28,7 +30,7 @@ class SprintTools:
         self.agile = AgileBoardsClient(self.client)
 
     def _issue_db_id(self, issue_id: str) -> str:
-        """Resolve a readable issue id (DEMO-123) to its internal DB id (2-456)."""
+        """Resolve a readable issue id (PROJ-123) to its internal DB id (2-456)."""
         data = self.client.get(f"issues/{issue_id}", params={"fields": "id,idReadable"})
         db_id = data.get("id") if isinstance(data, dict) else None
         if not db_id:
@@ -43,7 +45,7 @@ class SprintTools:
         FORMAT: list_sprints(board="Dev Board")
 
         Args:
-            board: Agile board name (default: "Dev Board").
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
 
         Returns:
             JSON string with the board's sprints (most recent last) and current sprint.
@@ -83,7 +85,7 @@ class SprintTools:
 
         Args:
             sprint: Sprint name (default: the board's current sprint).
-            board: Agile board name (default: "Dev Board").
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
 
         Returns:
             JSON string with the list of issues on the sprint.
@@ -146,7 +148,7 @@ class SprintTools:
         """
         Move an issue to a different sprint on an agile board.
 
-        FORMAT: move_issue_to_sprint(issue_id="DEMO-123", target_sprint="Sprint #92",
+        FORMAT: move_issue_to_sprint(issue_id="PROJ-123", target_sprint="Sprint #92",
                                      from_sprint="Sprint #91", board="Dev Board")
 
         Adds the issue to target_sprint. If from_sprint is given, the issue is also
@@ -154,10 +156,10 @@ class SprintTools:
         is simply added to the target sprint.
 
         Args:
-            issue_id: Readable issue id, e.g. "DEMO-123".
+            issue_id: Readable issue id, e.g. "PROJ-123".
             target_sprint: Sprint to move the issue into, e.g. "Sprint #92".
             from_sprint: Sprint to remove the issue from (optional), e.g. "Sprint #91".
-            board: Agile board name (default: "Dev Board").
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
 
         Returns:
             JSON string describing what was changed.
@@ -228,7 +230,7 @@ class SprintTools:
                 ),
                 "function": self.list_sprints,
                 "parameter_descriptions": {
-                    "board": "Agile board name (default: 'Dev Board')",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },
             "get_sprint_issues": {
@@ -240,22 +242,22 @@ class SprintTools:
                 "function": self.get_sprint_issues,
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
-                    "board": "Agile board name (default: 'Dev Board')",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },
             "move_issue_to_sprint": {
                 "description": (
                     "Move an issue to another sprint on an agile board. "
-                    'Example: move_issue_to_sprint(issue_id="DEMO-123", target_sprint="Sprint #92", '
+                    'Example: move_issue_to_sprint(issue_id="PROJ-123", target_sprint="Sprint #92", '
                     'from_sprint="Sprint #91"). Adds to target_sprint and, if from_sprint is given, '
                     "removes it from that sprint."
                 ),
                 "function": self.move_issue_to_sprint,
                 "parameter_descriptions": {
-                    "issue_id": "Readable issue id e.g. 'DEMO-123'",
+                    "issue_id": "Readable issue id e.g. 'PROJ-123'",
                     "target_sprint": "Sprint to move the issue into e.g. 'Sprint #92'",
                     "from_sprint": "Sprint to remove the issue from (optional) e.g. 'Sprint #91'",
-                    "board": "Agile board name (default: 'Dev Board')",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },
         }

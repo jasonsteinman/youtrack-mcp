@@ -2,7 +2,7 @@
 YouTrack team-action tools.
 
 Name-aware wrappers around common people operations. Users on this instance are
-usually referred to by display name ("Alex", "Pat"), but the API needs logins,
+usually referred to by display name ("Sam", "Alex"), but the API needs logins,
 so every tool here resolves a name (or login) to a login first.
 
   - whois:                 resolve a name to a YouTrack login (read-only).
@@ -111,10 +111,10 @@ class TeamTools:
         """
         Resolve a person's name to their YouTrack login (read-only, no changes).
 
-        FORMAT: whois(name="Pat")
+        FORMAT: whois(name="Alex")
 
         Args:
-            name: Display name or login fragment, e.g. "Pat", "Sam Carter".
+            name: Display name or login fragment, e.g. "Alex", "Alex Kim".
 
         Returns:
             JSON string with the resolved login and full name, or candidates if ambiguous.
@@ -136,11 +136,11 @@ class TeamTools:
         """
         Set an issue's Assignee by name or login (resolves names automatically).
 
-        FORMAT: assign_issue(issue_id="DEMO-123", person="Alex")
+        FORMAT: assign_issue(issue_id="PROJ-123", person="Sam")
 
         Args:
-            issue_id: Readable issue id, e.g. "DEMO-123".
-            person: Display name or login of the new assignee, e.g. "Alex Rivera".
+            issue_id: Readable issue id, e.g. "PROJ-123".
+            person: Display name or login of the new assignee, e.g. "Sam Lee".
 
         Returns:
             JSON string describing the change.
@@ -161,11 +161,11 @@ class TeamTools:
         """
         Set an issue's Reviewer custom field by name or login.
 
-        FORMAT: set_reviewer(issue_id="DEMO-123", person="Pat")
+        FORMAT: set_reviewer(issue_id="PROJ-123", person="Alex")
 
         Args:
-            issue_id: Readable issue id, e.g. "DEMO-123".
-            person: Display name or login of the reviewer, e.g. "Pat".
+            issue_id: Readable issue id, e.g. "PROJ-123".
+            person: Display name or login of the reviewer, e.g. "Alex".
 
         Returns:
             JSON string describing the change.
@@ -188,14 +188,14 @@ class TeamTools:
         """
         Add a comment to an issue and @-mention people by name or login.
 
-        FORMAT: comment_with_mentions(issue_id="DEMO-123", text="Please review",
-                                      mention="Pat, Alex")
+        FORMAT: comment_with_mentions(issue_id="PROJ-123", text="Please review",
+                                      mention="Alex, Sam")
 
         Names in `mention` are resolved to logins and appended as @mentions so the
         mentioned people get notified.
 
         Args:
-            issue_id: Readable issue id, e.g. "DEMO-123".
+            issue_id: Readable issue id, e.g. "PROJ-123".
             text: The comment body.
             mention: A name/login or comma-separated list (or a list) of people to @-mention.
 
@@ -243,7 +243,7 @@ class TeamTools:
             "whois": {
                 "description": (
                     "Resolve a person's name to their YouTrack login (read-only). "
-                    'Example: whois(name="Pat"). Returns candidates if ambiguous.'
+                    'Example: whois(name="Alex"). Returns candidates if ambiguous.'
                 ),
                 "function": self.whois,
                 "parameter_descriptions": {"name": "Display name or login fragment"},
@@ -251,34 +251,34 @@ class TeamTools:
             "assign_issue": {
                 "description": (
                     "Set an issue's Assignee by name or login (names resolved automatically). "
-                    'Example: assign_issue(issue_id="DEMO-123", person="Alex").'
+                    'Example: assign_issue(issue_id="PROJ-123", person="Sam").'
                 ),
                 "function": self.assign_issue,
                 "parameter_descriptions": {
-                    "issue_id": "Readable issue id e.g. 'DEMO-123'",
-                    "person": "Assignee name or login e.g. 'Alex Rivera'",
+                    "issue_id": "Readable issue id e.g. 'PROJ-123'",
+                    "person": "Assignee name or login e.g. 'Sam Lee'",
                 },
             },
             "set_reviewer": {
                 "description": (
                     "Set an issue's Reviewer custom field by name or login. "
-                    'Example: set_reviewer(issue_id="DEMO-123", person="Pat").'
+                    'Example: set_reviewer(issue_id="PROJ-123", person="Alex").'
                 ),
                 "function": self.set_reviewer,
                 "parameter_descriptions": {
-                    "issue_id": "Readable issue id e.g. 'DEMO-123'",
-                    "person": "Reviewer name or login e.g. 'Pat'",
+                    "issue_id": "Readable issue id e.g. 'PROJ-123'",
+                    "person": "Reviewer name or login e.g. 'Alex'",
                 },
             },
             "comment_with_mentions": {
                 "description": (
                     "Add a comment to an issue and @-mention people by name or login so they "
-                    'get notified. Example: comment_with_mentions(issue_id="DEMO-123", '
-                    'text="Please review", mention="Pat, Alex").'
+                    'get notified. Example: comment_with_mentions(issue_id="PROJ-123", '
+                    'text="Please review", mention="Alex, Sam").'
                 ),
                 "function": self.comment_with_mentions,
                 "parameter_descriptions": {
-                    "issue_id": "Readable issue id e.g. 'DEMO-123'",
+                    "issue_id": "Readable issue id e.g. 'PROJ-123'",
                     "text": "The comment body",
                     "mention": "Name/login or comma-separated list of people to @-mention",
                 },

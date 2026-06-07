@@ -11,6 +11,7 @@ Counting rules (chosen by the project owner):
 """
 
 import logging
+import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
@@ -20,8 +21,9 @@ from youtrack_mcp.utils import format_json_response
 
 logger = logging.getLogger(__name__)
 
-# The default agile board to report on. Override via the `board` argument.
-DEFAULT_BOARD = "Dev Board"
+# Default agile board to report on. Set YOUTRACK_DEFAULT_BOARD in your environment,
+# or pass the `board` argument explicitly on each call.
+DEFAULT_BOARD = os.getenv("YOUTRACK_DEFAULT_BOARD", "")
 
 # Field names as configured in the YouTrack project.
 STAGE_FIELD = "Stage"
@@ -118,6 +120,10 @@ class ReportTools:
 
         Returns {"board": <name>, "sprint": <name>} or raises ValueError.
         """
+        if not board_name:
+            raise ValueError(
+                "No board specified. Pass board=... or set the YOUTRACK_DEFAULT_BOARD environment variable."
+            )
         board = self._find_board(board_name)
         if not board:
             raise ValueError(
@@ -172,7 +178,7 @@ class ReportTools:
 
         Args:
             sprint: Sprint name (e.g. "Sprint #91"). Defaults to the board's current sprint.
-            board: Agile board name. Defaults to "Dev Board".
+            board: Agile board name. Defaults to the YOUTRACK_DEFAULT_BOARD env var.
             assignee: Optional login/name to limit the report to a single developer.
 
         Returns:
@@ -238,7 +244,7 @@ class ReportTools:
 
         Args:
             sprint: Sprint name (e.g. "Sprint #91"). Defaults to the board's current sprint.
-            board: Agile board name. Defaults to "Dev Board".
+            board: Agile board name. Defaults to the YOUTRACK_DEFAULT_BOARD env var.
             squad: Optional squad name (e.g. "Squad A") to limit the report.
 
         Returns:
@@ -300,7 +306,7 @@ class ReportTools:
                 "function": self.sprint_developer_report,
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: board's current sprint)",
-                    "board": "Agile board name (default: 'Dev Board')",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                     "assignee": "Optional login/name to limit to one developer",
                 },
             },
@@ -314,7 +320,7 @@ class ReportTools:
                 "function": self.sprint_squad_report,
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: board's current sprint)",
-                    "board": "Agile board name (default: 'Dev Board')",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                     "squad": "Optional squad name e.g. 'Squad A' (default: all squads)",
                 },
             },
