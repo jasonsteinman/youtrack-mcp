@@ -163,6 +163,7 @@ def load_all_tools() -> Dict[str, Callable]:
     from youtrack_mcp.tools.sprints import SprintTools
     from youtrack_mcp.tools.team_actions import TeamTools
     from youtrack_mcp.tools.inbox import InboxTools
+    from youtrack_mcp.tools.composites import CompositeTools
 
     # Initialize tool classes
     tool_classes = [
@@ -175,6 +176,7 @@ def load_all_tools() -> Dict[str, Callable]:
         SprintTools(),
         TeamTools(),
         InboxTools(),
+        CompositeTools(),
     ]
 
     # Optionally enable Knowledge Base tools via environment flag
