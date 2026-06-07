@@ -4,6 +4,11 @@
 
 A Model Context Protocol (MCP) server that provides access to YouTrack functionality.
 
+> ⭐ **This is a fine-tuned fork** of [`tonyzorin/youtrack-mcp`](https://github.com/tonyzorin/youtrack-mcp)
+> with added tools for **sprint operations**, **team reporting** (story points per
+> developer/squad), **name-aware** assignee/reviewer/mention actions, and a
+> **notifications inbox**. See **[FINE_TUNED_FEATURES.md](FINE_TUNED_FEATURES.md)** for the full list.
+
 ## 🚀 Quick Reference - Common Operations
 
 ### **🎯 State Transitions (Most Common)**
