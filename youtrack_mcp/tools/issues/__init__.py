@@ -141,6 +141,14 @@ class IssueTools:
         """Add a comment to an issue."""
         return self.basic_operations.add_comment(issue_id, text)
 
+    def delete_issue(self, issue_id: str) -> str:
+        """Permanently delete an issue (irreversible)."""
+        return self.basic_operations.delete_issue(issue_id)
+
+    def get_issue_history(self, issue_id: str) -> str:
+        """Get an issue's chronological change + comment history."""
+        return self.basic_operations.get_issue_history(issue_id)
+
     # === Linking Functions ===
     
     def link_issues(self, source_issue_id: str, target_issue_id: str, link_type: str) -> str:

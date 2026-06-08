@@ -10,6 +10,7 @@ Everything here is additive — all original tools still work. The new tools liv
 |------|--------|
 | Sprint reporting | `youtrack_mcp/tools/reports.py` |
 | Sprint operations | `youtrack_mcp/tools/sprints.py` + `youtrack_mcp/api/agiles.py` |
+| Issue operations (delete, history) | `youtrack_mcp/tools/issues/basic_operations.py` + `youtrack_mcp/api/issues.py` |
 | Team actions (by name) | `youtrack_mcp/tools/team_actions.py` |
 | Inbox & task summary | `youtrack_mcp/tools/inbox.py` |
 
@@ -34,12 +35,37 @@ board named in the `YOUTRACK_DEFAULT_BOARD` environment variable if `board` is o
 
 | Tool | What it does | Example |
 |------|--------------|---------|
-| `list_sprints` | List a board's sprints + current sprint | `list_sprints(board="Dev Board")` |
+| `list_sprints` | List a board's sprints + current sprint, **with start/finish/goal dates** | `list_sprints(board="Dev Board")` |
 | `get_sprint_issues` | Issues on a sprint (Stage, Assignee, Story Point) | `get_sprint_issues(sprint="Sprint #91")` |
 | `move_issue_to_sprint` | Move an issue between sprints | `move_issue_to_sprint(issue_id="PROJ-123", target_sprint="Sprint #92", from_sprint="Sprint #91")` |
+| `create_sprint` | Create a sprint, with dates or a duration | `create_sprint(name="Sprint #93", start_date="2026-06-20", duration_weeks=3)` |
+| `update_sprint` | Edit a sprint's name, start/finish dates, or goal | `update_sprint(sprint="Sprint #92", finish_date="2026-07-10")` |
+| `rollover_sprint` | Carry every non-`keep_stages` issue from one sprint to the next, in one call (all assignees/squads) | `rollover_sprint(from_sprint="Sprint #91", to_sprint="Sprint #92", dry_run=False)` |
 
 > On single-sprint boards, adding an issue to a sprint automatically removes it
 > from its previous one, so `move_issue_to_sprint` works even if `from_sprint` is omitted.
+>
+> `create_sprint`/`update_sprint` accept dates as `YYYY-MM-DD`; `create_sprint` can
+> also take `duration_weeks` instead of a `finish_date`.
+>
+> `rollover_sprint` defaults to a **safe `dry_run=True`** that only reports what
+> *would* move (and what stays). `keep_stages` defaults to `["Published"]`, so
+> finished work is left behind as the sprint's record. Pass `dry_run=False` to apply.
+
+## 🐞 Issue operations
+
+| Tool | What it does | Example |
+|------|--------------|---------|
+| `delete_issue` | Permanently delete an issue (irreversible) | `delete_issue(issue_id="PROJ-123")` |
+| `get_issue_history` | Full chronological timeline — field changes + comments, oldest first | `get_issue_history(issue_id="PROJ-123")` |
+
+> `delete_issue` needs the **Delete Issue** permission in the project; it cannot be undone.
+>
+> `get_issue_history` merges the activity log with comments into one list ordered
+> oldest → newest. Each entry is a `Created`, `Change`, or `Comment`: changes show
+> `field`, `from`, and `to` (e.g. previous → new assignee), and sprint moves are
+> surfaced as the `Sprint` field. Backed by YouTrack's `/activities` API plus the
+> issue's creation metadata.
 
 ## 👥 Team actions (name-aware)
 
@@ -65,6 +91,12 @@ automatically — you don't need to know logins. Ambiguous names return candidat
 
 > YouTrack has no clean "my notifications" REST endpoint, so `my_inbox` builds a
 > practical proxy from recent activity that would have notified you.
+
+## 🔧 Fixes to upstream behavior
+
+| Fix | Detail |
+|-----|--------|
+| Custom-field **values** in read tools | `get_issue`, `search_issues`, and `advanced_search` requested a bare `customFields(...,value)`, so YouTrack returned only `{"$type": ...}` placeholders — Assignee/Squad/Stage/Priority came back empty. A shared `ISSUE_FIELDS` constant (`youtrack_mcp/api/issues.py`) now expands `value(id,name,login,fullName,text,...)`, so these tools return real values like `get_issue_raw` already did. |
 
 ---
 

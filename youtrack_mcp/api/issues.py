@@ -13,6 +13,17 @@ from youtrack_mcp.api.client import YouTrackClient, YouTrackAPIError
 
 logger = logging.getLogger(__name__)
 
+# Expand custom-field *values* (users/enums/states), not just their $type. The
+# stock fields string requested a bare `customFields(...,value)` which makes
+# YouTrack return only `{"$type": ...}` per value — so Assignee/Squad/Stage/etc.
+# came back empty. Always select the value sub-fields so read tools return data.
+CUSTOM_FIELD_VALUE = "value(id,name,login,fullName,text,minutes,presentation,$type)"
+ISSUE_FIELDS = (
+    "id,idReadable,summary,description,created,updated,"
+    "project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),"
+    f"customFields(id,name,{CUSTOM_FIELD_VALUE})"
+)
+
 
 class AttachmentNotFoundError(ValueError):
     """Raised when an attachment is not found in an issue."""
@@ -97,26 +108,20 @@ class IssuesClient:
             The issue data
         """
         try:
-            # Get issue data
-            response = self.client.get(f"issues/{issue_id}")
-
-            # If the response doesn't have all needed fields, fetch more details
-            if (
-                isinstance(response, dict)
-                and response.get("$type") == "Issue"
-                and "summary" not in response
-            ):
-                # Get additional fields we need including attachments
-                fields = "id,idReadable,summary,description,created,updated,project(id,shortName),reporter,assignee,customFields,attachments(id,name,url,mimeType,size)"
-                try:
-                    detailed_response = self.client.get(
-                        f"issues/{issue_id}?fields={fields}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to get detailed issue data: {e}")
-                    detailed_response = response
-            else:
-                detailed_response = response
+            # Always request the full field set with expanded custom-field
+            # values so Assignee/Squad/Stage/Priority come back populated
+            # (a bare `customFields` selection returns only $type placeholders).
+            fields = (
+                ISSUE_FIELDS
+                + ",attachments(id,name,url,mimeType,size)"
+            )
+            try:
+                detailed_response = self.client.get(
+                    f"issues/{issue_id}?fields={fields}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get detailed issue data: {e}")
+                detailed_response = self.client.get(f"issues/{issue_id}")
 
             # Ensure the ID field is present
             if (
@@ -169,6 +174,51 @@ class IssuesClient:
             logger.exception(f"Error retrieving issue {issue_id}")
             # Create minimal issue to avoid breaking calls
             return Issue(id=issue_id, summary=f"Error: {str(e)[:100]}...")
+
+    def delete_issue(self, issue_id: str) -> None:
+        """
+        Permanently delete an issue.
+
+        Args:
+            issue_id: The issue ID or readable ID (e.g., PROJECT-123)
+
+        Note:
+            This is irreversible. Requires the "Delete Issue" permission in the
+            issue's project.
+        """
+        self.client.delete(f"issues/{issue_id}")
+
+    def get_issue_activities(self, issue_id: str) -> List[Dict[str, Any]]:
+        """
+        Get the activity (change) log for an issue: field changes and comments,
+        with who made each change and when.
+
+        Args:
+            issue_id: The issue ID or readable ID (e.g., PROJECT-123)
+
+        Returns:
+            List of raw activity items from the YouTrack Activities API,
+            ordered oldest-first.
+        """
+        fields = (
+            "id,timestamp,$type,"
+            "author(login,name,fullName),"
+            "added(name,login,fullName,text,presentation,minutes),"
+            "removed(name,login,fullName,text,presentation,minutes),"
+            "field(name,presentation,customField(name)),"
+            "target(id,text,$type)"
+        )
+        params = {
+            "categories": "CustomFieldCategory,CommentsCategory,SprintCategory,"
+            "IssueResolvedCategory,SummaryCategory,DescriptionCategory,"
+            "LinksCategory,ProjectCategory,AttachmentsCategory,TagsCategory",
+            "fields": fields,
+            "$top": -1,
+        }
+        response = self.client.get(
+            f"issues/{issue_id}/activities", params=params
+        )
+        return response if isinstance(response, list) else []
 
     def create_issue(
         self,
@@ -1010,8 +1060,9 @@ class IssuesClient:
         Returns:
             List of matching issues
         """
-        # Request additional fields to ensure we get summary
-        fields = "id,idReadable,summary,description,created,updated,project,reporter,assignee,customFields"
+        # Request additional fields to ensure we get summary AND expanded
+        # custom-field values (not just $type placeholders).
+        fields = ISSUE_FIELDS
         params = {"query": query, "$top": limit, "fields": fields}
         response = self.client.get("issues", params=params)
 
@@ -2329,8 +2380,9 @@ class IssuesClient:
         Returns:
             List of matching issues
         """
-        # Request additional fields to ensure we get summary
-        fields = "id,idReadable,summary,description,created,updated,project,reporter,assignee,customFields"
+        # Request additional fields to ensure we get summary AND expanded
+        # custom-field values (not just $type placeholders).
+        fields = ISSUE_FIELDS
         params = {"query": query, "$top": limit, "fields": fields}
         response = self.client.get("issues", params=params)
 
