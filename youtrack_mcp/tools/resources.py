@@ -649,7 +649,12 @@ class ResourcesTools:
     def search_issues(self, query: str) -> str:
         """Search issues as a resource."""
         try:
-            results = self.client.get("issues", params={"query": query, "$top": 100})
+            from youtrack_mcp.api.issues import ISSUE_FIELDS
+
+            results = self.client.get(
+                "issues",
+                params={"query": query, "$top": 100, "fields": ISSUE_FIELDS},
+            )
 
             return json.dumps(
                 {

@@ -9,7 +9,8 @@ New capabilities the stock MCP lacks:
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional
 
 from youtrack_mcp.api.client import YouTrackClient, ResourceNotFoundError
 from youtrack_mcp.api.agiles import AgileBoardsClient
@@ -20,6 +21,30 @@ logger = logging.getLogger(__name__)
 
 # Set YOUTRACK_DEFAULT_BOARD in your environment, or pass `board` on each call.
 DEFAULT_BOARD = os.getenv("YOUTRACK_DEFAULT_BOARD", "")
+
+
+def _date_to_millis(date_str: str) -> int:
+    """Parse a 'YYYY-MM-DD' (or ISO) date string to epoch millis (UTC midnight)."""
+    s = (date_str or "").strip()
+    # Accept a full ISO timestamp too, but we only need the date part.
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(s[:10], fmt).replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"Invalid date '{date_str}'. Use YYYY-MM-DD (e.g. 2026-06-15)."
+    )
+
+
+def _millis_to_date(millis: Optional[int]) -> Optional[str]:
+    """Render epoch millis as a 'YYYY-MM-DD' date string (UTC)."""
+    if not isinstance(millis, (int, float)):
+        return None
+    return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).strftime(
+        "%Y-%m-%d"
+    )
 
 
 class SprintTools:
@@ -58,7 +83,13 @@ class SprintTools:
                     {"error": f"Board '{board}' not found.", "available_boards": names}
                 )
             sprints = [
-                {"name": s.get("name"), "archived": s.get("archived", False)}
+                {
+                    "name": s.get("name"),
+                    "archived": s.get("archived", False),
+                    "start": _millis_to_date(s.get("start")),
+                    "finish": _millis_to_date(s.get("finish")),
+                    "goal": s.get("goal"),
+                }
                 for s in b.get("sprints", []) or []
             ]
             return format_json_response(
@@ -217,6 +248,265 @@ class SprintTools:
             logger.exception(f"Error moving issue {issue_id} to sprint {target_sprint}")
             return format_json_response({"error": str(e), "issue": issue_id})
 
+    @sync_wrapper
+    def create_sprint(
+        self,
+        name: str,
+        start_date: Optional[str] = None,
+        finish_date: Optional[str] = None,
+        duration_weeks: Optional[float] = None,
+        goal: Optional[str] = None,
+        board: str = DEFAULT_BOARD,
+    ) -> str:
+        """
+        Create a new sprint on an agile board.
+
+        FORMAT: create_sprint(name="Sprint #93", start_date="2026-06-15",
+                              finish_date="2026-07-06", board="Dev Board")
+                create_sprint(name="Sprint #93", start_date="2026-06-15",
+                              duration_weeks=3)
+
+        Args:
+            name: Sprint name (required), e.g. "Sprint #93".
+            start_date: Start date "YYYY-MM-DD" (optional).
+            finish_date: End date "YYYY-MM-DD" (optional).
+            duration_weeks: If finish_date is omitted, end = start + this many
+                weeks (optional). Ignored when finish_date is given.
+            goal: Sprint goal text (optional).
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+
+        Returns:
+            JSON string with the created sprint.
+        """
+        try:
+            b = self.agile.find_board(board)
+            if not b:
+                return format_json_response({"error": f"Board '{board}' not found."})
+
+            if self.agile.find_sprint(b, name):
+                return format_json_response(
+                    {"error": f"Sprint '{name}' already exists on '{b.get('name')}'."}
+                )
+
+            start_ms = _date_to_millis(start_date) if start_date else None
+            finish_ms = _date_to_millis(finish_date) if finish_date else None
+            if finish_ms is None and start_ms is not None and duration_weeks:
+                finish_ms = int(
+                    start_ms + timedelta(weeks=duration_weeks).total_seconds() * 1000
+                )
+            if start_ms is not None and finish_ms is not None and finish_ms < start_ms:
+                return format_json_response(
+                    {"error": "finish_date is before start_date."}
+                )
+
+            created = self.agile.create_sprint(
+                b["id"], name, start=start_ms, finish=finish_ms, goal=goal
+            )
+            return format_json_response(
+                {
+                    "status": "success",
+                    "board": b.get("name"),
+                    "sprint": created.get("name", name),
+                    "start": _millis_to_date(created.get("start")),
+                    "finish": _millis_to_date(created.get("finish")),
+                    "goal": created.get("goal"),
+                }
+            )
+        except ValueError as e:
+            return format_json_response({"error": str(e)})
+        except Exception as e:
+            logger.exception(f"Error creating sprint {name}")
+            return format_json_response({"error": str(e)})
+
+    @sync_wrapper
+    def update_sprint(
+        self,
+        sprint: str,
+        new_name: Optional[str] = None,
+        start_date: Optional[str] = None,
+        finish_date: Optional[str] = None,
+        goal: Optional[str] = None,
+        board: str = DEFAULT_BOARD,
+    ) -> str:
+        """
+        Update an existing sprint's name, start/finish dates, or goal.
+
+        FORMAT: update_sprint(sprint="Sprint #92", finish_date="2026-06-22")
+
+        Args:
+            sprint: Name of the sprint to update, e.g. "Sprint #92".
+            new_name: New sprint name (optional).
+            start_date: New start date "YYYY-MM-DD" (optional).
+            finish_date: New end date "YYYY-MM-DD" (optional).
+            goal: New sprint goal text (optional).
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+
+        Returns:
+            JSON string with the updated sprint.
+        """
+        try:
+            b = self.agile.find_board(board)
+            if not b:
+                return format_json_response({"error": f"Board '{board}' not found."})
+            target = self.agile.find_sprint(b, sprint)
+            if not target:
+                names = [s.get("name") for s in b.get("sprints", []) or []]
+                return format_json_response(
+                    {"error": f"Sprint '{sprint}' not found on '{b.get('name')}'.",
+                     "known_sprints": names[-10:]}
+                )
+
+            body: Dict[str, Any] = {}
+            if new_name is not None:
+                body["name"] = new_name
+            if start_date is not None:
+                body["start"] = _date_to_millis(start_date)
+            if finish_date is not None:
+                body["finish"] = _date_to_millis(finish_date)
+            if goal is not None:
+                body["goal"] = goal
+            if not body:
+                return format_json_response(
+                    {"error": "Nothing to update. Provide new_name, start_date, "
+                              "finish_date, or goal."}
+                )
+
+            updated = self.agile.update_sprint(b["id"], target["id"], body)
+            return format_json_response(
+                {
+                    "status": "success",
+                    "board": b.get("name"),
+                    "sprint": updated.get("name", target.get("name")),
+                    "start": _millis_to_date(updated.get("start")),
+                    "finish": _millis_to_date(updated.get("finish")),
+                    "goal": updated.get("goal"),
+                }
+            )
+        except ValueError as e:
+            return format_json_response({"error": str(e)})
+        except Exception as e:
+            logger.exception(f"Error updating sprint {sprint}")
+            return format_json_response({"error": str(e)})
+
+    @sync_wrapper
+    def rollover_sprint(
+        self,
+        from_sprint: str,
+        to_sprint: str,
+        keep_stages: Optional[List[str]] = None,
+        dry_run: bool = True,
+        board: str = DEFAULT_BOARD,
+    ) -> str:
+        """
+        Carry over all unfinished issues from one sprint to another in one call:
+        every issue whose Stage is NOT in keep_stages is moved to to_sprint;
+        issues in keep_stages stay behind. Covers all assignees/squads.
+
+        FORMAT: rollover_sprint(from_sprint="Sprint #91", to_sprint="Sprint #92")
+                rollover_sprint(from_sprint="Sprint #91", to_sprint="Sprint #92",
+                                dry_run=False)
+
+        Args:
+            from_sprint: Sprint to carry issues out of, e.g. "Sprint #91".
+            to_sprint: Sprint to move them into, e.g. "Sprint #92".
+            keep_stages: Stage values to leave behind (default: ["Published"]).
+            dry_run: If True (default), only report what WOULD move without
+                changing anything. Set False to actually move them.
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+
+        Returns:
+            JSON string listing moved/kept issues (or the plan, when dry_run).
+        """
+        try:
+            keep = keep_stages if keep_stages is not None else ["Published"]
+            keep_lower = {str(s).strip().lower() for s in keep}
+
+            b = self.agile.find_board(board)
+            if not b:
+                return format_json_response({"error": f"Board '{board}' not found."})
+            source = self.agile.find_sprint(b, from_sprint)
+            if not source:
+                return format_json_response(
+                    {"error": f"Source sprint '{from_sprint}' not found on '{b.get('name')}'."}
+                )
+            target = self.agile.find_sprint(b, to_sprint)
+            if not target:
+                return format_json_response(
+                    {"error": f"Target sprint '{to_sprint}' not found on '{b.get('name')}'."}
+                )
+
+            full = self.agile.get_sprint(
+                b["id"],
+                source["id"],
+                fields="name,issues(id,idReadable,summary,"
+                "customFields(name,value(name)))",
+            )
+
+            to_move, kept = [], []
+            for i in full.get("issues", []) or []:
+                stage = None
+                for cf in i.get("customFields", []) or []:
+                    if cf.get("name") == "Stage":
+                        val = cf.get("value")
+                        stage = val.get("name") if isinstance(val, dict) else None
+                        break
+                entry = {"id": i.get("idReadable"), "stage": stage}
+                if stage is not None and stage.lower() in keep_lower:
+                    kept.append(entry)
+                else:
+                    entry["_db_id"] = i.get("id")
+                    to_move.append(entry)
+
+            if dry_run:
+                return format_json_response(
+                    {
+                        "status": "dry_run",
+                        "board": b.get("name"),
+                        "from": source.get("name"),
+                        "to": target.get("name"),
+                        "keep_stages": keep,
+                        "would_move_count": len(to_move),
+                        "would_move": [
+                            {"id": e["id"], "stage": e["stage"]} for e in to_move
+                        ],
+                        "would_keep_count": len(kept),
+                        "would_keep": kept,
+                        "note": "Nothing changed. Re-run with dry_run=False to apply.",
+                    }
+                )
+
+            moved, errors = [], []
+            for e in to_move:
+                try:
+                    self.agile.add_issue_to_sprint(b["id"], target["id"], e["_db_id"])
+                    try:
+                        self.agile.remove_issue_from_sprint(
+                            b["id"], source["id"], e["_db_id"]
+                        )
+                    except ResourceNotFoundError:
+                        pass
+                    moved.append({"id": e["id"], "stage": e["stage"]})
+                except Exception as move_err:
+                    errors.append({"id": e["id"], "error": str(move_err)})
+
+            return format_json_response(
+                {
+                    "status": "success" if not errors else "partial",
+                    "board": b.get("name"),
+                    "from": source.get("name"),
+                    "to": target.get("name"),
+                    "keep_stages": keep,
+                    "moved_count": len(moved),
+                    "moved": moved,
+                    "kept_count": len(kept),
+                    "kept": kept,
+                    "errors": errors,
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error rolling over sprint {from_sprint} -> {to_sprint}")
+            return format_json_response({"error": str(e)})
+
     def close(self) -> None:
         if hasattr(self.client, "close"):
             self.client.close()
@@ -257,6 +547,54 @@ class SprintTools:
                     "issue_id": "Readable issue id e.g. 'PROJ-123'",
                     "target_sprint": "Sprint to move the issue into e.g. 'Sprint #92'",
                     "from_sprint": "Sprint to remove the issue from (optional) e.g. 'Sprint #91'",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                },
+            },
+            "create_sprint": {
+                "description": (
+                    "Create a new sprint on an agile board, optionally with start/finish "
+                    'dates or a duration. Example: create_sprint(name="Sprint #93", '
+                    'start_date="2026-06-15", duration_weeks=3).'
+                ),
+                "function": self.create_sprint,
+                "parameter_descriptions": {
+                    "name": "Sprint name e.g. 'Sprint #93' (required)",
+                    "start_date": "Start date 'YYYY-MM-DD' (optional)",
+                    "finish_date": "End date 'YYYY-MM-DD' (optional)",
+                    "duration_weeks": "If finish_date omitted, end = start + N weeks (optional)",
+                    "goal": "Sprint goal text (optional)",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                },
+            },
+            "update_sprint": {
+                "description": (
+                    "Update an existing sprint's name, start/finish dates, or goal. "
+                    'Example: update_sprint(sprint="Sprint #92", finish_date="2026-06-22").'
+                ),
+                "function": self.update_sprint,
+                "parameter_descriptions": {
+                    "sprint": "Name of the sprint to update e.g. 'Sprint #92'",
+                    "new_name": "New sprint name (optional)",
+                    "start_date": "New start date 'YYYY-MM-DD' (optional)",
+                    "finish_date": "New end date 'YYYY-MM-DD' (optional)",
+                    "goal": "New sprint goal text (optional)",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                },
+            },
+            "rollover_sprint": {
+                "description": (
+                    "Carry over all unfinished issues from one sprint to another in one call "
+                    "(all assignees/squads): every issue whose Stage is not in keep_stages is "
+                    "moved; the rest stay. Defaults to a safe dry_run that only reports the plan. "
+                    'Example: rollover_sprint(from_sprint="Sprint #91", to_sprint="Sprint #92", '
+                    "dry_run=False)."
+                ),
+                "function": self.rollover_sprint,
+                "parameter_descriptions": {
+                    "from_sprint": "Sprint to carry issues out of e.g. 'Sprint #91'",
+                    "to_sprint": "Sprint to move them into e.g. 'Sprint #92'",
+                    "keep_stages": "Stage values to leave behind (default: ['Published'])",
+                    "dry_run": "If true (default) only report what would move; false to apply",
                     "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },

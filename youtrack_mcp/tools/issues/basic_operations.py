@@ -46,7 +46,8 @@ class BasicOperations:
         """
         try:
             # First try to get the issue data with explicit fields
-            fields = "id,idReadable,summary,description,created,updated,project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),customFields(id,name,value)"
+            from youtrack_mcp.api.issues import ISSUE_FIELDS
+            fields = ISSUE_FIELDS
             raw_issue = self.client.get(f"issues/{issue_id}?fields={fields}")
 
             # If we got a minimal response, enhance it with default values
@@ -82,7 +83,8 @@ class BasicOperations:
         """
         try:
             # Request with explicit fields to get complete data
-            fields = "id,idReadable,summary,description,created,updated,project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),customFields(id,name,value)"
+            from youtrack_mcp.api.issues import ISSUE_FIELDS
+            fields = ISSUE_FIELDS
             params = {"query": query, "$top": limit, "fields": fields}
             raw_issues = self.client.get("issues", params=params)
 
@@ -258,6 +260,187 @@ class BasicOperations:
             return format_json_response({"error": str(e), "status": "error"})
 
     @sync_wrapper
+    def delete_issue(self, issue_id: str) -> str:
+        """
+        Permanently delete an issue.
+
+        FORMAT: delete_issue(issue_id="DEMO-123")
+
+        Args:
+            issue_id: The issue identifier (e.g., "DEMO-123", "PROJECT-456")
+
+        Returns:
+            JSON string with the deletion status.
+
+        Warning:
+            This is irreversible. Requires the "Delete Issue" permission in the
+            issue's project.
+        """
+        try:
+            # Resolve to the readable id for a clear confirmation message and to
+            # surface "not found" before attempting the delete.
+            try:
+                info = self.client.get(
+                    f"issues/{issue_id}?fields=idReadable,summary"
+                )
+                readable = info.get("idReadable", issue_id)
+                summary = info.get("summary")
+            except Exception:
+                readable, summary = issue_id, None
+
+            self.issues_api.delete_issue(issue_id)
+            return format_json_response(
+                {
+                    "status": "success",
+                    "deleted": readable,
+                    "summary": summary,
+                    "message": f"Issue {readable} permanently deleted.",
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error deleting issue {issue_id}")
+            return format_json_response({"error": str(e), "status": "error"})
+
+    @sync_wrapper
+    def get_issue_history(self, issue_id: str) -> str:
+        """
+        Get an issue's full history as a single chronological list, merging field
+        changes (who changed what, old -> new) with comments (author + text),
+        oldest first.
+
+        FORMAT: get_issue_history(issue_id="DEMO-123")
+
+        Args:
+            issue_id: The issue identifier (e.g., "DEMO-123", "PROJECT-456")
+
+        Returns:
+            JSON string with a chronological "history" list. Each entry has
+            date (ISO 8601), type ("Change" or "Comment"), who, field, from, to,
+            and (for comments) text.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            activities = self.issues_api.get_issue_activities(issue_id)
+
+            def _iso(ms):
+                return (
+                    datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+                    if isinstance(ms, (int, float))
+                    else None
+                )
+
+            # The activities log starts at the first CHANGE, not creation. Fetch
+            # the issue's created timestamp + reporter so history can open with a
+            # "Created" event.
+            created_event = None
+            try:
+                meta = self.client.get(
+                    f"issues/{issue_id}"
+                    "?fields=created,reporter(login,name,fullName)"
+                )
+                created_ms = meta.get("created")
+                rep = meta.get("reporter") or {}
+                created_event = {
+                    "date": _iso(created_ms),
+                    "timestamp": created_ms,
+                    "type": "Created",
+                    "who": rep.get("name") or rep.get("fullName") or rep.get("login") or "unknown",
+                }
+            except Exception as meta_err:
+                logger.warning(f"Could not fetch creation info for {issue_id}: {meta_err}")
+
+            def _fmt_value(val: Any) -> Optional[str]:
+                """Render an activity added/removed payload as readable text."""
+                if val is None:
+                    return None
+                if isinstance(val, list):
+                    parts = [p for p in (_fmt_value(v) for v in val) if p]
+                    return ", ".join(parts) if parts else None
+                if isinstance(val, dict):
+                    return (
+                        val.get("name")
+                        or val.get("fullName")
+                        or val.get("login")
+                        or val.get("presentation")
+                        or val.get("text")
+                        or val.get("minutes")
+                    )
+                return str(val)
+
+            history = []
+            for act in activities:
+                ts = act.get("timestamp")
+                iso = (
+                    datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+                    if isinstance(ts, (int, float))
+                    else None
+                )
+                author = act.get("author") or {}
+                who = (
+                    author.get("name")
+                    or author.get("fullName")
+                    or author.get("login")
+                    or "unknown"
+                )
+                a_type = act.get("$type", "") or ""
+
+                if "Comment" in a_type:
+                    target = act.get("target") or {}
+                    text = target.get("text")
+                    if text is None:
+                        text = _fmt_value(act.get("added"))
+                    history.append(
+                        {
+                            "date": iso,
+                            "timestamp": ts,
+                            "type": "Comment",
+                            "who": who,
+                            "text": text,
+                        }
+                    )
+                else:
+                    field = act.get("field") or {}
+                    field_name = field.get("name") or (
+                        (field.get("customField") or {}).get("name")
+                    ) or field.get("presentation")
+                    # YouTrack names the sprint-membership field after the board
+                    # (e.g. "Board Dev Board"); relabel it "Sprint" for clarity so
+                    # sprint moves read naturally in the timeline.
+                    if isinstance(field_name, str) and field_name.startswith("Board "):
+                        field_name = "Sprint"
+                    history.append(
+                        {
+                            "date": iso,
+                            "timestamp": ts,
+                            "type": "Change",
+                            "who": who,
+                            "field": field_name,
+                            "from": _fmt_value(act.get("removed")),
+                            "to": _fmt_value(act.get("added")),
+                        }
+                    )
+
+            if created_event:
+                history.append(created_event)
+
+            # Oldest first; activities API is usually already ordered but sort to be safe.
+            history.sort(key=lambda h: h.get("timestamp") or 0)
+            for h in history:
+                h.pop("timestamp", None)
+
+            return format_json_response(
+                {
+                    "issue": issue_id,
+                    "event_count": len(history),
+                    "history": history,
+                }
+            )
+        except Exception as e:
+            logger.exception(f"Error getting history for issue {issue_id}")
+            return format_json_response({"error": str(e)})
+
+    @sync_wrapper
     def add_comment(self, issue_id: str, text: str) -> str:
         """
         Add a comment to an issue.
@@ -318,5 +501,17 @@ class BasicOperations:
                     "issue_id": "Issue identifier like 'DEMO-123' or 'PROJECT-456'",
                     "text": "Comment text content"
                 }
+            },
+            "delete_issue": {
+                "description": "Permanently delete an issue. IRREVERSIBLE - requires the 'Delete Issue' permission in the project. Example: delete_issue(issue_id='DEMO-123')",
+                "parameter_descriptions": {
+                    "issue_id": "Issue identifier like 'DEMO-123' or 'PROJECT-456'"
+                }
+            },
+            "get_issue_history": {
+                "description": "Get an issue's full history as one chronological list (oldest first), merging field changes (who changed what, from -> to) with comments (author + text). Use to answer 'who was the previous assignee', 'who changed the status', etc. Example: get_issue_history(issue_id='DEMO-123')",
+                "parameter_descriptions": {
+                    "issue_id": "Issue identifier like 'DEMO-123' or 'PROJECT-456'"
+                }
             }
-        } 
+        }
