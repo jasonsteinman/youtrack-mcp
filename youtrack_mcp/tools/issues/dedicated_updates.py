@@ -327,20 +327,29 @@ class DedicatedUpdates:
         Common Usage: Assignment during triage, team member allocation
         """
         try:
-            if not issue_id or not assignee:
+            if not issue_id:
                 return format_json_response({
-                    "error": "Both issue ID and assignee are required"
+                    "error": "Issue ID is required"
                 })
-            
-            logger.info(f"Updating issue {issue_id} assignee to '{assignee}' using proven simple string format")
-            
-            # Use the proven simple string format for custom field updates
+
+            # Empty / "unassigned" / "none" clears the Assignee.
+            clear = (not assignee) or str(assignee).strip().lower() in (
+                "unassigned", "none", "unset", "clear", "empty", "null"
+            )
+
+            if clear:
+                logger.info(f"Clearing assignee on issue {issue_id}")
+            else:
+                logger.info(f"Updating issue {issue_id} assignee to '{assignee}' using proven simple string format")
+
+            # Use the proven simple string format for custom field updates.
+            # A None value tells the updater to clear the field (null / []).
             from youtrack_mcp.tools.issues.custom_fields import CustomFields
             custom_fields_handler = CustomFields(self.issues_api, self.projects_api)
-            
+
             result = custom_fields_handler.update_custom_fields(
                 issue_id=issue_id,
-                custom_fields={"Assignee": assignee}
+                custom_fields={"Assignee": None if clear else assignee}
             )
             
             # Parse the result to provide assignee-specific feedback
@@ -349,9 +358,13 @@ class DedicatedUpdates:
             if result_data.get("status") == "success":
                 return format_json_response({
                     "status": "success",
-                    "message": f"Successfully assigned issue {issue_id} to '{assignee}'",
+                    "message": (
+                        f"Successfully cleared assignee on issue {issue_id}"
+                        if clear else
+                        f"Successfully assigned issue {issue_id} to '{assignee}'"
+                    ),
                     "issue_id": issue_id,
-                    "assignee": assignee,
+                    "assignee": None if clear else assignee,
                     "api_method": "Direct Field Update API",
                     "updated_fields": result_data.get("updated_fields", ["Assignee"]),
                     "issue_data": result_data.get("issue_data", {})

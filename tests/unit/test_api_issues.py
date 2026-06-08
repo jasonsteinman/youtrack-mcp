@@ -570,24 +570,35 @@ class TestIssuesCustomFields(unittest.TestCase):
         self.assertEqual(result, mock_issue)
         self.mock_client.post.assert_not_called()
 
-    def test_update_issue_custom_fields_validation_error(self):
-        """Test validation error handling."""
-        # Mock get_issue response
+    def test_update_issue_custom_fields_validation_is_non_blocking(self):
+        """Client-side validation misses must not block the update.
+
+        The allowed-values source (admin bundle endpoint) can be incomplete on some
+        instances, producing false negatives that previously blocked legitimate
+        updates (e.g. a Stage value the endpoint failed to list). A failed client-side
+        validation now only warns; the request still goes to YouTrack, which rejects
+        it server-side with a precise error if it really is invalid.
+        """
         mock_issue = Mock()
         mock_issue.project = {"id": "0-0"}
         self.issues_client.get_issue = Mock(return_value=mock_issue)
 
-        # Mock validation to fail
+        # Validation reports the value as invalid (possible false negative).
         self.issues_client._validate_custom_field_value = Mock(return_value=False)
+        # Avoid the real schema lookup; force the legacy build path deterministically.
+        self.issues_client._get_issue_field_types = Mock(return_value={})
+        self.mock_client.post.return_value = {"ok": True}
 
-        with self.assertRaises(Exception) as context:
-            self.issues_client.update_issue_custom_fields(
-                issue_id="DEMO-123",
-                custom_fields={"Priority": "InvalidValue"},
-                validate=True
-            )
+        # Should NOT raise just because client-side validation returned False.
+        self.issues_client.update_issue_custom_fields(
+            issue_id="DEMO-123",
+            custom_fields={"Priority": "MaybeValid"},
+            validate=True,
+        )
 
-        self.assertIn("Custom field validation failed", str(context.exception))
+        # The update was still attempted against the server.
+        post_endpoints = [c.args[0] for c in self.mock_client.post.call_args_list if c.args]
+        self.assertIn("issues/DEMO-123", post_endpoints)
 
     def test_get_issue_custom_fields_success(self):
         """Test getting custom fields for an issue."""

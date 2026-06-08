@@ -24,6 +24,33 @@ ISSUE_FIELDS = (
     f"customFields(id,name,{CUSTOM_FIELD_VALUE})"
 )
 
+# Map each concrete IssueCustomField $type to the value-element $type it expects
+# and whether it is multi-valued. This is the schema-aware replacement for guessing
+# a field's type from its name: sending an EnumBundleElement to a State field (because
+# the field happened not to be named "State") is exactly what blocked Stage updates.
+# Values are still resolved by name, so no admin bundle lookup is required.
+ISSUE_FIELD_ELEMENT_TYPES = {
+    "StateIssueCustomField": ("StateBundleElement", False),
+    "StateMachineIssueCustomField": ("StateBundleElement", False),
+    "SingleEnumIssueCustomField": ("EnumBundleElement", False),
+    "MultiEnumIssueCustomField": ("EnumBundleElement", True),
+    "SingleOwnedIssueCustomField": ("OwnedBundleElement", False),
+    "MultiOwnedIssueCustomField": ("OwnedBundleElement", True),
+    "SingleVersionIssueCustomField": ("VersionBundleElement", False),
+    "MultiVersionIssueCustomField": ("VersionBundleElement", True),
+    "SingleBuildIssueCustomField": ("BuildBundleElement", False),
+    "MultiBuildIssueCustomField": ("BuildBundleElement", True),
+    "SingleUserIssueCustomField": ("User", False),
+    "MultiUserIssueCustomField": ("User", True),
+    "SingleGroupIssueCustomField": ("UserGroup", False),
+    "MultiGroupIssueCustomField": ("UserGroup", True),
+    "PeriodIssueCustomField": ("PeriodValue", False),
+    # Simple / text / date fields carry the raw scalar directly as the value.
+    "SimpleIssueCustomField": (None, False),
+    "TextIssueCustomField": (None, False),
+    "DateIssueCustomField": (None, False),
+}
+
 
 class AttachmentNotFoundError(ValueError):
     """Raised when an attachment is not found in an issue."""
@@ -592,9 +619,19 @@ class IssuesClient:
                 
                 if project_id:
                     for field_name, field_value in custom_fields.items():
+                        # Clearing a field has no value to validate.
+                        if self._is_clear_request(field_value):
+                            continue
                         is_valid = self._validate_custom_field_value(project_id, field_name, field_value)
                         if not is_valid:
-                            raise YouTrackAPIError(f"Custom field validation failed for '{field_name}': '{field_value}' is not a valid value")
+                            # The allowed-values source (admin bundle endpoint) can be
+                            # incomplete on some instances, producing false negatives, so
+                            # don't hard-block: warn and let YouTrack reject server-side
+                            # with a precise error if the value really is invalid.
+                            logger.warning(
+                                f"Validation could not confirm '{field_value}' for field "
+                                f"'{field_name}'; proceeding (server will reject if invalid)."
+                            )
                 else:
                     logger.warning("Could not get project ID for validation, skipping validation")
             
@@ -616,11 +653,24 @@ class IssuesClient:
                 use_simple_approach = False
             
             update_data = {"customFields": []}
-            
+
+            # Prefer each field's real concrete type, read from the issue itself, over
+            # name-based guessing. This is what lets non-"State" state fields (e.g. Stage)
+            # and clears of user/enum fields produce a correctly-typed payload.
+            field_types = self._get_issue_field_types(issue_id)
+
             for field_name, raw_field_value in custom_fields.items():
+                # Schema-aware path: build using the field's concrete $type when known.
+                field_meta = field_types.get(field_name.lower())
+                schema_item = self._build_custom_field_item(field_meta, field_name, raw_field_value)
+                if schema_item is not None:
+                    update_data["customFields"].append(schema_item)
+                    continue
+
+                # Legacy fallback (field not present on the issue / unsupported type).
                 # Normalize complex object formats to simple strings first
                 field_value = self._normalize_field_value(raw_field_value)
-                
+
                 # Determine field type and construct proper object with actual ID
                 if use_simple_approach:
                     # Fallback to simple $type approach when project ID is not available
@@ -1744,6 +1794,114 @@ class IssuesClient:
             # Already a simple value
             return str(field_value)
 
+    # ------------------------------------------------------------------ #
+    # Schema-aware custom-field payload construction
+    # ------------------------------------------------------------------ #
+    def _get_issue_field_types(self, issue_id: str) -> Dict[str, Dict[str, Any]]:
+        """Return a map of the issue's custom fields keyed by lowercased name.
+
+        Each entry is ``{"id", "name", "$type"}`` taken straight from the issue, so
+        updates can use a field's *actual* concrete type (e.g. ``StateIssueCustomField``
+        for ``Stage``) instead of guessing from the field name.
+        """
+        try:
+            resp = self.client.get(
+                f"issues/{issue_id}",
+                params={"fields": "customFields(id,name,$type)"},
+            )
+        except Exception as e:
+            logger.warning(f"Could not read field types for {issue_id}: {e}")
+            return {}
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for cf in (resp.get("customFields") if isinstance(resp, dict) else None) or []:
+            name = cf.get("name")
+            if name:
+                out[name.lower()] = {
+                    "id": cf.get("id"),
+                    "name": name,
+                    "$type": cf.get("$type"),
+                }
+        return out
+
+    @staticmethod
+    def _is_clear_request(value: Any) -> bool:
+        """True when ``value`` means "clear this field" (None / empty string / empty list)."""
+        if value is None:
+            return True
+        if isinstance(value, str) and value.strip() == "":
+            return True
+        if isinstance(value, (list, tuple)) and len(value) == 0:
+            return True
+        return False
+
+    def _build_user_element(self, value: Any) -> Dict[str, Any]:
+        """Build a ``User`` value element from a login, name, id, or user dict."""
+        # Accept pre-shaped dicts ({"id": ...} / {"login": ...}) as-is.
+        if isinstance(value, dict):
+            if value.get("id"):
+                return {"$type": "User", "id": value["id"]}
+            if value.get("login"):
+                return {"$type": "User", "login": value["login"]}
+
+        login = self._normalize_field_value(value)
+        try:
+            from youtrack_mcp.api.users import UsersClient
+
+            user = UsersClient(self.client).get_user(login)
+            uid = getattr(user, "id", None)
+            if uid:
+                return {"$type": "User", "id": uid}
+        except Exception as e:
+            logger.warning(f"Could not resolve user id for '{login}': {e}")
+        # Server resolves a bare login too.
+        return {"$type": "User", "login": login}
+
+    def _build_field_element(self, element_type: str, value: Any) -> Any:
+        """Build a single value element of the given element ``$type``."""
+        if element_type == "User":
+            return self._build_user_element(value)
+        if element_type == "UserGroup":
+            return {"$type": "UserGroup", "name": self._normalize_field_value(value)}
+        if element_type == "PeriodValue":
+            minutes = self._parse_time_to_minutes(self._normalize_field_value(value))
+            return {"$type": "PeriodValue", "minutes": minutes or 0}
+        if element_type is None:
+            # Simple / text / date field: pass the raw scalar through.
+            return value if not isinstance(value, dict) else self._normalize_field_value(value)
+        # Bundle element (state, enum, owned, version, build): resolve by name.
+        return {"$type": element_type, "name": self._normalize_field_value(value)}
+
+    def _build_custom_field_item(
+        self, field_meta: Optional[Dict[str, Any]], field_name: str, raw_value: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Build one ``customFields[]`` entry using the field's concrete ``$type``.
+
+        Returns ``None`` when the field's type is unknown/unsupported so the caller can
+        fall back to the legacy name-based heuristic. Handles clearing by emitting
+        ``value: []`` (multi) or ``value: null`` (single).
+        """
+        ftype = (field_meta or {}).get("$type")
+        if not ftype or ftype not in ISSUE_FIELD_ELEMENT_TYPES:
+            return None
+
+        element_type, is_multi = ISSUE_FIELD_ELEMENT_TYPES[ftype]
+        canonical_name = (field_meta or {}).get("name") or field_name
+        item: Dict[str, Any] = {"$type": ftype, "name": canonical_name}
+
+        if self._is_clear_request(raw_value):
+            item["value"] = [] if is_multi else None
+            return item
+
+        if is_multi:
+            values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
+            item["value"] = [self._build_field_element(element_type, v) for v in values]
+        else:
+            if isinstance(raw_value, (list, tuple)):
+                raw_value = raw_value[0] if raw_value else None
+            item["value"] = self._build_field_element(element_type, raw_value)
+        return item
+
     def _update_other_custom_fields(self, issue_id: str, custom_fields: Dict[str, Any], validate: bool, use_commands: bool) -> None:
         """
         Update non-state custom fields, prioritizing direct field updates.
@@ -1774,9 +1932,19 @@ class IssuesClient:
                 
                 if project_id:
                     for field_name, field_value in custom_fields.items():
+                        # Clearing a field has no value to validate.
+                        if self._is_clear_request(field_value):
+                            continue
                         is_valid = self._validate_custom_field_value(project_id, field_name, field_value)
                         if not is_valid:
-                            raise YouTrackAPIError(f"Custom field validation failed for '{field_name}': '{field_value}' is not a valid value")
+                            # The allowed-values source (admin bundle endpoint) can be
+                            # incomplete on some instances, producing false negatives, so
+                            # don't hard-block: warn and let YouTrack reject server-side
+                            # with a precise error if the value really is invalid.
+                            logger.warning(
+                                f"Validation could not confirm '{field_value}' for field "
+                                f"'{field_name}'; proceeding (server will reject if invalid)."
+                            )
                 else:
                     logger.warning("Could not get project ID for validation, skipping validation")
             
@@ -1798,11 +1966,24 @@ class IssuesClient:
                 use_simple_approach = False
             
             update_data = {"customFields": []}
-            
+
+            # Prefer each field's real concrete type, read from the issue itself, over
+            # name-based guessing. This is what lets non-"State" state fields (e.g. Stage)
+            # and clears of user/enum fields produce a correctly-typed payload.
+            field_types = self._get_issue_field_types(issue_id)
+
             for field_name, raw_field_value in custom_fields.items():
+                # Schema-aware path: build using the field's concrete $type when known.
+                field_meta = field_types.get(field_name.lower())
+                schema_item = self._build_custom_field_item(field_meta, field_name, raw_field_value)
+                if schema_item is not None:
+                    update_data["customFields"].append(schema_item)
+                    continue
+
+                # Legacy fallback (field not present on the issue / unsupported type).
                 # Normalize complex object formats to simple strings first
                 field_value = self._normalize_field_value(raw_field_value)
-                
+
                 # Determine field type and construct proper object with actual ID
                 if use_simple_approach:
                     # Fallback to simple $type approach when project ID is not available

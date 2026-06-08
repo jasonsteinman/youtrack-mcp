@@ -342,7 +342,11 @@ class TestDedicatedUpdates:
         assert any("2d (2 days)" in item for item in format_examples)
 
     def test_all_functions_require_both_parameters(self):
-        """Test that all update functions require both parameters."""
+        """Test that all update functions require both parameters.
+
+        Exception: update_issue_assignee treats an empty value as an explicit
+        "clear the assignee" request rather than an error (see dedicated test below).
+        """
         functions_to_test = [
             (self.dedicated_updates.update_issue_state, "In Progress"),
             (self.dedicated_updates.update_issue_priority, "Critical"),
@@ -350,19 +354,37 @@ class TestDedicatedUpdates:
             (self.dedicated_updates.update_issue_type, "Bug"),
             (self.dedicated_updates.update_issue_estimation, "4h")
         ]
-        
+
         for func, value in functions_to_test:
             # Test empty issue_id
             with patch('youtrack_mcp.tools.issues.custom_fields.CustomFields'):
                 result = func("", value)
                 result_data = json.loads(result)
                 assert "required" in result_data["error"].lower()
-            
-            # Test empty value
+
+            # Test empty value (assignee intentionally allows this as a clear).
+            if func == self.dedicated_updates.update_issue_assignee:
+                continue
             with patch('youtrack_mcp.tools.issues.custom_fields.CustomFields'):
                 result = func("DEMO-123", "")
                 result_data = json.loads(result)
                 assert "required" in result_data["error"].lower()
+
+    def test_update_issue_assignee_empty_value_clears(self):
+        """An empty / 'unassigned' value clears the Assignee instead of erroring."""
+        for empty_value in ["", "unassigned", "none"]:
+            with patch('youtrack_mcp.tools.issues.custom_fields.CustomFields') as MockCF:
+                MockCF.return_value.update_custom_fields.return_value = json.dumps(
+                    {"status": "success", "updated_fields": ["Assignee"], "issue_data": {}}
+                )
+                result = json.loads(
+                    self.dedicated_updates.update_issue_assignee("DEMO-123", empty_value)
+                )
+                # It must clear (pass Assignee=None), not error.
+                assert result.get("status") == "success", result
+                MockCF.return_value.update_custom_fields.assert_called_once()
+                _, kwargs = MockCF.return_value.update_custom_fields.call_args
+                assert kwargs["custom_fields"] == {"Assignee": None}
 
     def test_get_tool_definitions(self):
         """Test tool definitions for all dedicated functions."""
