@@ -18,6 +18,11 @@ move sprints, report story points per developer/squad, assign people by name, an
 what's waiting on you. It speaks plain strings, not fragile API objects, so the common
 operations just work.
 
+> **New here / setting it up for a teammate?**
+> → [docs/INTRODUCTION.md](docs/INTRODUCTION.md) — the one-page pitch ·
+> [docs/INSTALL.md](docs/INSTALL.md) — install & connect in ~10 min ·
+> [skills/README.md](skills/README.md) — the one-word skills pack.
+
 ## ✨ What's fine-tuned here
 
 Beyond the standard YouTrack tools, Jason-MCP adds:
