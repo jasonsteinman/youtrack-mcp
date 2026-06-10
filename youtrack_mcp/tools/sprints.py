@@ -7,6 +7,7 @@ New capabilities the stock MCP lacks:
   - move_issue_to_sprint: move an issue from one sprint to another.
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
@@ -14,7 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from youtrack_mcp.api.client import YouTrackClient, ResourceNotFoundError
 from youtrack_mcp.api.agiles import AgileBoardsClient
+from youtrack_mcp.api.issues import IssuesClient
 from youtrack_mcp.mcp_wrappers import sync_wrapper
+from youtrack_mcp.reporting.sprint_summary import build_sprint_summary
 from youtrack_mcp.utils import format_json_response
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ class SprintTools:
     def __init__(self):
         self.client = YouTrackClient()
         self.agile = AgileBoardsClient(self.client)
+        self.issues = IssuesClient(self.client)
 
     def _issue_db_id(self, issue_id: str) -> str:
         """Resolve a readable issue id (PROJ-123) to its internal DB id (2-456)."""
@@ -507,6 +511,138 @@ class SprintTools:
             logger.exception(f"Error rolling over sprint {from_sprint} -> {to_sprint}")
             return format_json_response({"error": str(e)})
 
+    @sync_wrapper
+    def start_sprint(
+        self,
+        board: str = DEFAULT_BOARD,
+        days_ahead: int = 3,
+        keep_stages: Optional[List[str]] = None,
+        dry_run: bool = True,
+    ) -> str:
+        """
+        Start the next sprint: auto-detect the ending sprint and the upcoming one,
+        then carry over every unfinished issue (Stage not in keep_stages) into the
+        upcoming sprint. Use this for "start the sprint".
+
+        The ending sprint is the board's current sprint (or, if none is set, the most
+        recently started one). The upcoming sprint is the next sprint by start date.
+        If that next sprint starts more than `days_ahead` days out, it's still used
+        but flagged, so a dry run can't silently target the wrong sprint.
+
+        FORMAT: start_sprint()                      # dry run, default board
+                start_sprint(dry_run=False)         # actually move
+
+        Args:
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+            days_ahead: Window, in days, for "about to start" (default: 3). Informational.
+            keep_stages: Stage values to leave behind (default: ["Published"]).
+            dry_run: If True (default), only report the plan; False to apply.
+
+        Returns:
+            JSON string with the detected sprints plus the rollover plan/result.
+        """
+        try:
+            b = self.agile.find_board(board)
+            if not b:
+                return format_json_response({"error": f"Board '{board}' not found."})
+
+            sprints = [
+                s for s in (b.get("sprints") or [])
+                if not s.get("archived") and s.get("start") is not None
+            ]
+            if not sprints:
+                return format_json_response(
+                    {"error": f"Board '{b.get('name')}' has no dated, active sprints."}
+                )
+            sprints.sort(key=lambda s: s["start"])
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+            # Ending sprint: the current one if set, else the latest already-started.
+            current_name = (b.get("currentSprint") or {}).get("name")
+            ending = next((s for s in sprints if s.get("name") == current_name), None)
+            if ending is None:
+                started = [s for s in sprints if s["start"] <= now_ms]
+                ending = started[-1] if started else sprints[0]
+
+            # Upcoming sprint: the next one to start after the ending sprint.
+            later = [s for s in sprints if s["start"] > ending["start"]]
+            if not later:
+                return format_json_response({
+                    "error": (
+                        f"No sprint starts after '{ending.get('name')}'. "
+                        "Create the next sprint first (create_sprint)."
+                    ),
+                    "ending_sprint": ending.get("name"),
+                })
+            upcoming = later[0]
+
+            starts_in_days = round((upcoming["start"] - now_ms) / 86_400_000, 1)
+            within_window = starts_in_days <= days_ahead
+
+            # Delegate the actual move to the tested rollover logic.
+            rolled = json.loads(
+                self.rollover_sprint(
+                    from_sprint=ending["name"],
+                    to_sprint=upcoming["name"],
+                    keep_stages=keep_stages,
+                    dry_run=dry_run,
+                    board=b.get("name"),
+                )
+            )
+            rolled["detected"] = {
+                "ending_sprint": ending.get("name"),
+                "ending_finish": _millis_to_date(ending.get("finish")),
+                "upcoming_sprint": upcoming.get("name"),
+                "upcoming_start": _millis_to_date(upcoming.get("start")),
+                "upcoming_starts_in_days": starts_in_days,
+                "within_window": within_window,
+            }
+            if not within_window:
+                rolled["warning"] = (
+                    f"Upcoming sprint '{upcoming.get('name')}' starts in {starts_in_days} "
+                    f"days (> {days_ahead}-day window). Verify this is the right sprint "
+                    "before applying."
+                )
+            return format_json_response(rolled)
+        except Exception as e:
+            logger.exception("Error starting sprint")
+            return format_json_response({"error": str(e)})
+
+    @sync_wrapper
+    def sprint_summary(
+        self,
+        sprint: Optional[str] = None,
+        board: str = DEFAULT_BOARD,
+    ) -> str:
+        """
+        Summarise a sprint: each task's status AT START vs NOW, the progress made,
+        and the unplanned tasks added mid-sprint (count + story points), broken down
+        per squad and for the whole board. Use this for "sprint summary".
+
+        Status-at-start is reconstructed from each issue's Stage history (replayed to
+        the sprint start time); unplanned additions are detected from when each issue
+        was added to the sprint (after the start = unplanned).
+
+        FORMAT: sprint_summary()                       # current sprint, default board
+                sprint_summary(sprint="Sprint #91")
+
+        Args:
+            sprint: Sprint name (default: the board's current sprint).
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+
+        Returns:
+            JSON string with board + per-squad summaries (start/end snapshots, KPIs,
+            and the list of unplanned mid-sprint additions).
+        """
+        try:
+            data = build_sprint_summary(self.agile, self.issues, board, sprint)
+            return format_json_response(data)
+        except ValueError as e:
+            return format_json_response({"error": str(e)})
+        except Exception as e:
+            logger.exception("Error building sprint summary")
+            return format_json_response({"error": str(e)})
+
     def close(self) -> None:
         if hasattr(self.client, "close"):
             self.client.close()
@@ -595,6 +731,34 @@ class SprintTools:
                     "to_sprint": "Sprint to move them into e.g. 'Sprint #92'",
                     "keep_stages": "Stage values to leave behind (default: ['Published'])",
                     "dry_run": "If true (default) only report what would move; false to apply",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                },
+            },
+            "start_sprint": {
+                "description": (
+                    "Start the next sprint: auto-detect the ending sprint and the upcoming "
+                    "one, then carry over every unfinished issue (Stage not in keep_stages) "
+                    "into the upcoming sprint. Safe dry_run by default. Use for "
+                    '"start the sprint". Example: start_sprint(dry_run=False).'
+                ),
+                "function": self.start_sprint,
+                "parameter_descriptions": {
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                    "days_ahead": "Window in days for 'about to start' (default: 3)",
+                    "keep_stages": "Stage values to leave behind (default: ['Published'])",
+                    "dry_run": "If true (default) only report the plan; false to apply",
+                },
+            },
+            "sprint_summary": {
+                "description": (
+                    "Summarise a sprint: each task's status at start vs now, the progress "
+                    "made, and the unplanned tasks added mid-sprint (count + story points), "
+                    "per squad and for the whole board. Use for \"sprint summary\". "
+                    'Example: sprint_summary(sprint="Sprint #91"). Omit sprint for current.'
+                ),
+                "function": self.sprint_summary,
+                "parameter_descriptions": {
+                    "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
                     "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },
