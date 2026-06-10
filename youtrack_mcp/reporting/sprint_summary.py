@@ -189,10 +189,69 @@ def aggregate(items: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
                 "summary": i.get("summary"),
                 "points": i.get("story_points", 0),
                 "stage_now": i.get("stage_now"),
+                "squad": i.get("squad"),
             }
             for i in unplanned
         ],
     }
+
+
+def _role_slot() -> Dict[str, Any]:
+    return {"count": 0, "points": 0.0, "by_stage": {}}
+
+
+def dev_summary(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Per-developer breakdown for a set of issues.
+
+    Returns ``{name: {"assigned": {...}, "reviewing": {...}}}`` where each role has
+    ``count``, ``points`` and ``by_stage`` (a {stage: {count, points}} map showing
+    *where* that developer's tasks currently are).
+    """
+    devs: Dict[str, Dict[str, Any]] = {}
+
+    def _add(name, role, stage, pts):
+        d = devs.setdefault(
+            name, {"assigned": _role_slot(), "reviewing": _role_slot()}
+        )[role]
+        d["count"] += 1
+        d["points"] += pts
+        bs = d["by_stage"].setdefault(stage, {"count": 0, "points": 0.0})
+        bs["count"] += 1
+        bs["points"] += pts
+
+    for i in items:
+        stage = i.get("stage_now") or UNKNOWN_STAGE
+        pts = i.get("story_points", 0) or 0
+        if i.get("assignee"):
+            _add(i["assignee"], "assigned", stage, pts)
+        if i.get("reviewer"):
+            _add(i["reviewer"], "reviewing", stage, pts)
+
+    for d in devs.values():
+        for role in ("assigned", "reviewing"):
+            d[role]["points"] = round(d[role]["points"], 1)
+            for bs in d[role]["by_stage"].values():
+                bs["points"] = round(bs["points"], 1)
+    return devs
+
+
+def squad_rollup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One compact row per squad: tasks, points, completed, completion rate."""
+    squads = sorted({i.get("squad") for i in items if i.get("squad")})
+    rows = []
+    for sq in squads:
+        block = aggregate([i for i in items if i.get("squad") == sq], sq)
+        rows.append(
+            {
+                "squad": sq,
+                "tasks": block["total_tasks"],
+                "points": block["total_points"],
+                "completed": block["completed_tasks"],
+                "unplanned": block["unplanned_tasks"],
+                "completion_rate": block["completion_rate"],
+            }
+        )
+    return rows
 
 
 # --------------------------------------------------------------------------- #
@@ -239,18 +298,21 @@ def build_sprint_summary(
     issues_client,
     board: str,
     sprint: Optional[str] = None,
+    exclude_squads: Optional[List[str]] = ("Epic",),
 ) -> Dict[str, Any]:
-    """Compute the full sprint summary (board + per-squad).
+    """Compute the full sprint summary (team + per-squad + per-developer).
 
     Args:
         agile: an AgileBoardsClient.
         issues_client: an IssuesClient (for get_issue_activities).
         board: agile board name.
         sprint: sprint name, or None for the board's current sprint.
+        exclude_squads: squad names to drop entirely (default: ("Epic",)).
 
     Returns:
-        A JSON-serialisable dict: board/sprint meta, board_summary, per-squad
-        summaries, and the per-issue records that back them.
+        A JSON-serialisable dict: board/sprint meta, board_summary (with a
+        squad_rollup), per-squad summaries (each with a per-developer breakdown),
+        and the per-issue records that back them.
     """
     b = agile.find_board(board)
     if not b:
@@ -301,6 +363,8 @@ def build_sprint_summary(
                 "id": iid,
                 "summary": i.get("summary"),
                 "squad": squad,
+                "assignee": _cf(i, "Assignee"),
+                "reviewer": _cf(i, "Reviewer"),
                 "stage_now": stage_now or UNKNOWN_STAGE,
                 # planned tasks have a start status; unplanned ones weren't here yet
                 "stage_at_start": (s_start or UNKNOWN_STAGE) if not unplanned else None,
@@ -311,7 +375,21 @@ def build_sprint_summary(
             }
         )
 
+    if exclude_squads:
+        excl = {str(s).strip().lower() for s in exclude_squads}
+        issues = [i for i in issues if (i["squad"] or "").strip().lower() not in excl]
+
+    board_summary = aggregate(issues, "Board (all squads)")
+    board_summary["squad_rollup"] = squad_rollup(issues)
+
     squads = sorted({i["squad"] for i in issues})
+    squad_blocks = {}
+    for sq in squads:
+        sq_items = [i for i in issues if i["squad"] == sq]
+        block = aggregate(sq_items, sq)
+        block["developers"] = dev_summary(sq_items)
+        squad_blocks[sq] = block
+
     return {
         "board": b.get("name"),
         "sprint": sprint_name,
@@ -320,10 +398,7 @@ def build_sprint_summary(
         "start_ms": sprint_start,
         "finish_ms": sprint_finish,
         "issue_count": len(issues),
-        "board_summary": aggregate(issues, "Board (all squads)"),
-        "squads": {
-            sq: aggregate([i for i in issues if i["squad"] == sq], sq)
-            for sq in squads
-        },
+        "board_summary": board_summary,
+        "squads": squad_blocks,
         "issues": issues,
     }

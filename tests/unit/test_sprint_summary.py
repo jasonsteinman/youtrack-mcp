@@ -110,11 +110,14 @@ def test_ordered_stages_canonical_then_extras():
 
 
 # --- aggregate ------------------------------------------------------------ #
-def _issue(id_, stage_now, stage_at_start, points, unplanned):
+def _issue(id_, stage_now, stage_at_start, points, unplanned,
+           assignee=None, reviewer=None, squad="Squad B"):
     return {
         "id": id_,
         "summary": id_,
-        "squad": "Squad B",
+        "squad": squad,
+        "assignee": assignee,
+        "reviewer": reviewer,
         "stage_now": stage_now,
         "stage_at_start": None if unplanned else stage_at_start,
         "story_points": points,
@@ -150,3 +153,45 @@ def test_aggregate_empty():
     assert agg["total_tasks"] == 0
     assert agg["completion_rate"] == 0.0
     assert agg["start_snapshot"] == {}
+
+
+# --- dev_summary ---------------------------------------------------------- #
+def test_dev_summary_splits_assigned_and_reviewing():
+    items = [
+        _issue("A", "Review", "Backlog", 3, False, assignee="Alex", reviewer="Ali"),
+        _issue("B", "Test", "Review", 2, False, assignee="Alex", reviewer="Ali"),
+        _issue("C", "Review", "Backlog", 5, False, assignee="Ali", reviewer="Alex"),
+    ]
+    devs = ss.dev_summary(items)
+
+    # Alex: assigned A+B (5 pts), reviewing C (5 pts)
+    assert devs["Alex"]["assigned"]["count"] == 2
+    assert devs["Alex"]["assigned"]["points"] == 5
+    assert devs["Alex"]["reviewing"]["count"] == 1
+    assert devs["Alex"]["reviewing"]["points"] == 5
+    # "where they are": Alex's assigned tasks sit in Review and Test
+    assert devs["Alex"]["assigned"]["by_stage"]["Review"]["count"] == 1
+    assert devs["Alex"]["assigned"]["by_stage"]["Test"]["count"] == 1
+    # Ali: assigned C (5 pts), reviewing A+B (5 pts)
+    assert devs["Ali"]["assigned"]["count"] == 1
+    assert devs["Ali"]["reviewing"]["count"] == 2
+
+
+def test_dev_summary_ignores_missing_people():
+    items = [_issue("A", "Review", "Backlog", 3, False, assignee=None, reviewer=None)]
+    assert ss.dev_summary(items) == {}
+
+
+# --- squad_rollup --------------------------------------------------------- #
+def test_squad_rollup_one_row_per_squad():
+    items = [
+        _issue("A", "Published", "In Progress", 3, False, squad="Squad B"),
+        _issue("B", "Review", "Backlog", 2, False, squad="Squad C"),
+        _issue("C", "Test", "Backlog", 1, False, squad="Squad C"),
+    ]
+    rows = ss.squad_rollup(items)
+    by_squad = {r["squad"]: r for r in rows}
+    assert by_squad["Squad B"]["tasks"] == 1
+    assert by_squad["Squad B"]["completed"] == 1
+    assert by_squad["Squad C"]["tasks"] == 2
+    assert by_squad["Squad C"]["points"] == 3

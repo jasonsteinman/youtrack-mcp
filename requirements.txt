@@ -6,7 +6,6 @@ requests>=2.32.3
 
 # Reporting / PDF script dependencies (sprint_summary_pdf.py, stuck_tasks_pdf.py)
 reportlab>=4.0.0
-matplotlib>=3.7.0
 
 # Development dependencies
 pytest>=7.0.0
