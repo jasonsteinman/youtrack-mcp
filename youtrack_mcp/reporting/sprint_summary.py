@@ -18,16 +18,19 @@ logger = logging.getLogger(__name__)
 UNKNOWN_STAGE = "(unknown)"
 UNKNOWN_SQUAD = "(no squad)"
 
-# Canonical board column order (Dev Board). "Rady to Staging" is their own typo.
+# Canonical board column order (Dev Board). Both the correct and the board's own
+# typo spellings ("Rady to ...") are listed so whichever exists sorts correctly.
 STAGE_ORDER = [
     "Backlog",
-    "OnHold",
     "In Progress",
+    "OnHold",
     "Review",
     "Code Review",
-    "Test",
-    "Rady to Staging",
     "Ready to Staging",
+    "Rady to Staging",
+    "Test",
+    "Ready to Publish",
+    "Rady to Publish",
     "Published",
 ]
 
@@ -140,12 +143,19 @@ def is_unplanned(
 
 
 def ordered_stages(*snapshots: Dict[str, int]) -> List[str]:
-    """Union of stage keys across snapshots, in canonical board order, extras last."""
-    seen: set = set()
+    """Union of stage keys across snapshots, in canonical board order, extras last.
+
+    Matching is case-insensitive; the actual (as-seen) stage spelling is returned.
+    """
+    seen: Dict[str, str] = {}  # lower-cased -> actual spelling
     for snap in snapshots:
-        seen.update((snap or {}).keys())
-    ordered = [s for s in STAGE_ORDER if s in seen]
-    extras = sorted(s for s in seen if s not in STAGE_ORDER)
+        for k in (snap or {}).keys():
+            seen.setdefault((k or "").strip().lower(), k)
+    order_lower = [s.strip().lower() for s in STAGE_ORDER]
+    ordered = [seen[o] for o in order_lower if o in seen]
+    extras = sorted(
+        actual for low, actual in seen.items() if low not in set(order_lower)
+    )
     return ordered + extras
 
 
