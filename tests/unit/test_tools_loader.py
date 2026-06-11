@@ -160,6 +160,32 @@ class TestToolDiscoveryLogic:
         assert len(tool_class_names) == 2
 
 
+class TestCreationToolsExposed:
+    """Regression: the server must actually expose the issue-creating tools.
+
+    `create_issue` is defined in IssueTools and `create_task` in CompositeTools.
+    These guard against either being silently dropped from the loaded tool set
+    (so 'can Jason-MCP create an issue?' always has a checked answer: yes).
+    """
+
+    def _load_offline(self):
+        # Patch the network client's __init__ so every tool class instantiates
+        # without a token or any API call; the loader only reflects methods.
+        from youtrack_mcp.api.client import YouTrackClient
+        with patch.object(YouTrackClient, "__init__", return_value=None):
+            return load_all_tools()
+
+    def test_create_issue_and_create_task_are_exposed(self):
+        tools = self._load_offline()
+        assert "create_issue" in tools, "create_issue must be exposed by the loader"
+        assert "create_task" in tools, "create_task must be exposed by the loader"
+
+    def test_core_issue_tools_present(self):
+        tools = self._load_offline()
+        for name in ("get_issue", "search_issues", "update_issue", "delete_issue"):
+            assert name in tools, f"{name} must be exposed by the loader"
+
+
 class TestToolLoaderErrorHandling:
     """Test error handling in tool loader."""
 
