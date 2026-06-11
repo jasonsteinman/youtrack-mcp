@@ -95,6 +95,26 @@ def test_planned_when_added_before_start():
     assert ss.is_unplanned(entered, SPRINT_START) is False
 
 
+def test_current_sprint_latest_add_wins():
+    acts = [
+        sprint_act(SPRINT_START - 1000, added=["Sprint #90"]),
+        sprint_act(SPRINT_START + 1000, removed=["Sprint #90"], added=["Sprint #91"]),
+    ]
+    assert ss.current_sprint(acts) == "Sprint #91"
+
+
+def test_current_sprint_removed_then_none():
+    acts = [
+        sprint_act(SPRINT_START - 1000, added=["Sprint #90"]),
+        sprint_act(SPRINT_START + 1000, removed=["Sprint #90"]),
+    ]
+    assert ss.current_sprint(acts) is None
+
+
+def test_current_sprint_no_events():
+    assert ss.current_sprint([]) is None
+
+
 def test_unplanned_ignores_other_sprint_names():
     acts = [sprint_act(SPRINT_START + 5000, added=["Sprint #90"])]
     # No add for #91 -> falls back, here no fallback -> None -> planned (not unplanned)

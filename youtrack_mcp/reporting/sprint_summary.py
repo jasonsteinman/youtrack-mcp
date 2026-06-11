@@ -142,6 +142,31 @@ def is_unplanned(
     return entry_ts > sprint_start + grace_ms
 
 
+def current_sprint(activities: List[Dict[str, Any]]) -> Optional[str]:
+    """The sprint the issue is in *now*, replayed from SprintCategory add/remove events.
+
+    Walks the sprint events oldest-first: an add sets the current sprint, a remove
+    clears it. Returns the sprint still active at the end, or None if it isn't in one
+    (or the activity log doesn't cover its sprint membership).
+    """
+    events = []
+    for a in activities or []:
+        if (a.get("$type") or "") != "SprintCategory":
+            continue
+        ts = a.get("timestamp")
+        if ts is None:
+            continue
+        events.append((ts, _names(a.get("added")), _names(a.get("removed"))))
+    events.sort(key=lambda e: e[0])
+    cur = None
+    for _ts, added, removed in events:
+        if added:
+            cur = added[-1]
+        elif removed:
+            cur = None
+    return cur
+
+
 def ordered_stages(*snapshots: Dict[str, int]) -> List[str]:
     """Union of stage keys across snapshots, in canonical board order, extras last.
 
