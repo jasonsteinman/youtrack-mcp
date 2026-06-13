@@ -122,6 +122,72 @@ def test_unplanned_ignores_other_sprint_names():
     assert ss.is_unplanned(None, SPRINT_START) is False
 
 
+def test_sprint_events_detected_via_activity_item_type():
+    # Real YouTrack labels sprint events "SprintActivityItem", not "SprintCategory".
+    act = {
+        "$type": "SprintActivityItem",
+        "timestamp": SPRINT_START + 1,
+        "added": [{"name": "Sprint #91"}],
+        "removed": [],
+    }
+    assert ss.sprint_events([act]) == [(SPRINT_START + 1, ["Sprint #91"], [])]
+    assert ss.sprint_entry_ts([act], "Sprint #91") == SPRINT_START + 1
+
+
+# --- member_of_at --------------------------------------------------------- #
+def test_member_of_at_replays_to_timestamp():
+    acts = [
+        sprint_act(SPRINT_START - 1000, added=["Sprint #91"]),       # joined before start
+        sprint_act(SPRINT_START + 1000, removed=["Sprint #91"]),     # left after start
+    ]
+    assert ss.member_of_at(acts, "Sprint #91", SPRINT_START) is True   # member at start
+    assert ss.member_of_at(acts, "Sprint #91", SPRINT_START + 2000) is False
+
+
+def test_member_of_at_not_yet_added():
+    acts = [sprint_act(SPRINT_START + 1000, added=["Sprint #91"])]
+    assert ss.member_of_at(acts, "Sprint #91", SPRINT_START) is False  # added after start
+
+
+def test_was_ever_in_sprint():
+    acts = [sprint_act(SPRINT_START - 5000, added=["Sprint #90"], removed=["Sprint #89"])]
+    assert ss.was_ever_in_sprint(acts, "Sprint #90") is True
+    assert ss.was_ever_in_sprint(acts, "Sprint #91") is False
+
+
+# --- classify_membership -------------------------------------------------- #
+def test_classify_planned_member_at_start():
+    acts = [sprint_act(SPRINT_START - 1000, added=["Sprint #91"])]
+    assert ss.classify_membership(acts, "Sprint #91", SPRINT_START,
+                                  previous_sprint="Sprint #90") == "planned"
+
+
+def test_classify_carryover_added_after_start_from_prev_sprint():
+    # Was in #90, rolled into #91 only after the sprint started -> carryover, NOT unplanned.
+    acts = [
+        sprint_act(SPRINT_START - 9000, added=["Sprint #90"]),
+        sprint_act(SPRINT_START + 2000, added=["Sprint #91"], removed=["Sprint #90"]),
+    ]
+    assert ss.classify_membership(acts, "Sprint #91", SPRINT_START,
+                                  previous_sprint="Sprint #90") == "carryover"
+
+
+def test_classify_unplanned_genuine_new_scope():
+    # Added after start, never in the previous sprint -> genuine mid-sprint addition.
+    acts = [sprint_act(SPRINT_START + 2000, added=["Sprint #91"])]
+    assert ss.classify_membership(acts, "Sprint #91", SPRINT_START,
+                                  previous_sprint="Sprint #90") == "unplanned"
+
+
+def test_classify_no_events_falls_back_to_created():
+    assert ss.classify_membership([], "Sprint #91", SPRINT_START,
+                                  previous_sprint="Sprint #90",
+                                  created=SPRINT_START - 100) == "planned"
+    assert ss.classify_membership([], "Sprint #91", SPRINT_START,
+                                  previous_sprint="Sprint #90",
+                                  created=SPRINT_START + 100) == "unplanned"
+
+
 # --- ordered_stages ------------------------------------------------------- #
 def test_ordered_stages_canonical_then_extras():
     order = ss.ordered_stages({"Published": 1, "Backlog": 2}, {"Mystery": 1})
@@ -173,6 +239,25 @@ def test_aggregate_empty():
     assert agg["total_tasks"] == 0
     assert agg["completion_rate"] == 0.0
     assert agg["start_snapshot"] == {}
+
+
+def test_aggregate_three_way_planned_carryover_unplanned():
+    items = [
+        _issue("A", "Published", "In Progress", 3, False),                 # planned
+        _issue("C", "In Progress", None, 5, True),                         # unplanned
+        {**_issue("D", "Review", "Backlog", 2, False), "carryover": True},  # carryover
+    ]
+    agg = ss.aggregate(items, "Squad B")
+    assert agg["total_tasks"] == 3
+    assert agg["planned_tasks"] == 1
+    assert agg["carryover_tasks"] == 1
+    assert agg["unplanned_tasks"] == 1
+    assert agg["carryover_points"] == 2
+    assert agg["unplanned_points"] == 5
+    # start snapshot = planned + carryover (both pre-existed the sprint)
+    assert agg["start_snapshot"] == {"In Progress": 1, "Backlog": 1}
+    assert agg["carryover_list"][0]["id"] == "D"
+    assert agg["unplanned_list"][0]["id"] == "C"
 
 
 # --- dev_summary ---------------------------------------------------------- #
