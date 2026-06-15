@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import Mock, patch
 
 from youtrack_mcp.tools.issues.basic_operations import BasicOperations
+from youtrack_mcp.api.issues import ISSUE_FIELDS
 
 
 class TestBasicOperations:
@@ -75,7 +76,7 @@ class TestBasicOperations:
         assert result_data["project"] == mock_issue_data["project"]
         
         # Verify API call with correct fields
-        expected_fields = "id,idReadable,summary,description,created,updated,project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),customFields(id,name,value)"
+        expected_fields = ISSUE_FIELDS
         self.mock_client.get.assert_called_once_with(f"issues/{issue_id}?fields={expected_fields}")
 
     def test_get_issue_minimal_response_enhancement(self):
@@ -143,7 +144,7 @@ class TestBasicOperations:
         assert result_data == mock_search_results
         
         # Verify API call with correct parameters
-        expected_fields = "id,idReadable,summary,description,created,updated,project(id,name,shortName),reporter(id,login,name),assignee(id,login,name),customFields(id,name,value)"
+        expected_fields = ISSUE_FIELDS
         expected_params = {"query": query, "$top": limit, "fields": expected_fields}
         self.mock_client.get.assert_called_once_with("issues", params=expected_params)
 
@@ -374,7 +375,63 @@ class TestBasicOperations:
             issue_id=issue_id,
             summary=new_summary,
             description=new_description,
+            uses_markdown=None,
             additional_fields=additional_fields
+        )
+
+    def test_update_issue_description_only(self):
+        """Regression: a minimal issue_id + description update must succeed.
+
+        Previously the IssueTools facade declared a uses_markdown parameter and
+        forwarded it positionally to BasicOperations.update_issue, which did not
+        accept it -> "takes from 2 to 5 positional arguments but 6 were given".
+        """
+        # Arrange
+        issue_id = "DEMO-5725"
+        new_description = "Updated description text"
+        mock_updated_issue = Mock()
+        mock_updated_issue.model_dump.return_value = {
+            "id": "3-5725",
+            "description": new_description,
+        }
+        self.mock_issues_api.update_issue.return_value = mock_updated_issue
+
+        # Act
+        result = self.basic_ops.update_issue(
+            issue_id=issue_id, description=new_description
+        )
+        result_data = json.loads(result)
+
+        # Assert
+        assert result_data["description"] == new_description
+        self.mock_issues_api.update_issue.assert_called_once_with(
+            issue_id=issue_id,
+            summary=None,
+            description=new_description,
+            uses_markdown=None,
+            additional_fields=None,
+        )
+
+    def test_update_issue_uses_markdown(self):
+        """uses_markdown is forwarded through to the API layer."""
+        # Arrange
+        issue_id = "DEMO-123"
+        mock_updated_issue = Mock()
+        mock_updated_issue.model_dump.return_value = {"id": "3-123"}
+        self.mock_issues_api.update_issue.return_value = mock_updated_issue
+
+        # Act
+        self.basic_ops.update_issue(
+            issue_id=issue_id, description="# Title", uses_markdown=True
+        )
+
+        # Assert
+        self.mock_issues_api.update_issue.assert_called_once_with(
+            issue_id=issue_id,
+            summary=None,
+            description="# Title",
+            uses_markdown=True,
+            additional_fields=None,
         )
 
     def test_update_issue_with_dict_response(self):
