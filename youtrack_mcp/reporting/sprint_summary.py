@@ -67,6 +67,103 @@ def _is_stage_activity(act: Dict[str, Any]) -> bool:
     return (cf.get("name") or "").lower() == "stage"
 
 
+# A sprint add/remove event. YouTrack's per-issue and global activities endpoints
+# label these with the activity-item type "SprintActivityItem"; the request *category*
+# is "SprintCategory" (the spelling our unit fixtures use). Accept both, plus the
+# board-sprint filter field, so replay works whatever the source.
+_SPRINT_ACTIVITY_TYPES = {"SprintActivityItem", "SprintCategory"}
+
+
+def _is_sprint_activity(act: Dict[str, Any]) -> bool:
+    if (act.get("$type") or "") in _SPRINT_ACTIVITY_TYPES:
+        return True
+    field = act.get("field") or {}
+    return (field.get("$type") or "") == "BoardSprintFilterField"
+
+
+def sprint_events(activities: List[Dict[str, Any]]) -> List[tuple]:
+    """Sprint add/remove events as ``[(ts, added_names, removed_names), ...]`` ascending."""
+    evs = []
+    for a in activities or []:
+        if not _is_sprint_activity(a):
+            continue
+        ts = a.get("timestamp")
+        if ts is None:
+            continue
+        evs.append((ts, _names(a.get("added")), _names(a.get("removed"))))
+    evs.sort(key=lambda e: e[0])
+    return evs
+
+
+def member_of_at(
+    activities: List[Dict[str, Any]],
+    sprint_name: str,
+    at_ts: Optional[int],
+) -> bool:
+    """Was the issue a member of ``sprint_name`` as of ``at_ts`` (epoch millis)?
+
+    Replays the sprint add/remove events with ts <= at_ts: an add to the sprint sets
+    membership, a remove of it clears it. ``at_ts`` of None means "now" (replay all).
+    """
+    target = (sprint_name or "").strip().lower()
+    if not target:
+        return False
+    member = False
+    for ts, added, removed in sprint_events(activities):
+        if at_ts is not None and ts > at_ts:
+            break
+        if target in [n.strip().lower() for n in added]:
+            member = True
+        elif target in [n.strip().lower() for n in removed]:
+            member = False
+    return member
+
+
+def was_ever_in_sprint(activities: List[Dict[str, Any]], sprint_name: str) -> bool:
+    """True if the issue was ever *added* to ``sprint_name`` (rolled-over signal)."""
+    target = (sprint_name or "").strip().lower()
+    if not target:
+        return False
+    for _ts, added, _removed in sprint_events(activities):
+        if target in [n.strip().lower() for n in added]:
+            return True
+    return False
+
+
+def classify_membership(
+    activities: List[Dict[str, Any]],
+    sprint_name: str,
+    sprint_start: Optional[int],
+    previous_sprint: Optional[str] = None,
+    created: Optional[int] = None,
+) -> str:
+    """Classify how an issue came to be in the current sprint.
+
+    Returns one of:
+      - "planned":   it was a member of the sprint at the sprint's start.
+      - "carryover": not a member at start, but it was in the previous sprint
+        (rolled in late, e.g. at/after the new sprint kicked off) — committed work.
+      - "unplanned": not a member at start and not from the previous sprint — genuine
+        scope added mid-sprint.
+
+    With no sprint_start (sprint has no start date) or no sprint events at all, falls
+    back to the created-date heuristic: created before start -> planned, else unplanned.
+    """
+    if sprint_start is None or not sprint_events(activities):
+        # No reliable membership timeline: fall back to the created date. Issues that
+        # existed before the sprint started are treated as planned; newer ones as
+        # genuine mid-sprint additions. (Carryover can't be told apart here.)
+        if created is not None and sprint_start is not None and created <= sprint_start:
+            return "planned"
+        return "unplanned"
+
+    if member_of_at(activities, sprint_name, sprint_start):
+        return "planned"
+    if previous_sprint and was_ever_in_sprint(activities, previous_sprint):
+        return "carryover"
+    return "unplanned"
+
+
 def stage_changes(activities: List[Dict[str, Any]]) -> List[tuple]:
     """Return Stage-change events as ``[(ts, old, new), ...]`` sorted ascending."""
     changes = []
@@ -120,8 +217,7 @@ def sprint_entry_ts(
     target = (sprint_name or "").strip().lower()
     best: Optional[int] = None
     for a in activities or []:
-        atype = a.get("$type") or ""
-        if atype and atype != "SprintCategory":
+        if not _is_sprint_activity(a):
             continue
         added = [n.strip().lower() for n in _names(a.get("added"))]
         if target and target in added:
@@ -149,17 +245,8 @@ def current_sprint(activities: List[Dict[str, Any]]) -> Optional[str]:
     clears it. Returns the sprint still active at the end, or None if it isn't in one
     (or the activity log doesn't cover its sprint membership).
     """
-    events = []
-    for a in activities or []:
-        if (a.get("$type") or "") != "SprintCategory":
-            continue
-        ts = a.get("timestamp")
-        if ts is None:
-            continue
-        events.append((ts, _names(a.get("added")), _names(a.get("removed"))))
-    events.sort(key=lambda e: e[0])
     cur = None
-    for _ts, added, removed in events:
+    for _ts, added, removed in sprint_events(activities):
         if added:
             cur = added[-1]
         elif removed:
@@ -185,12 +272,24 @@ def ordered_stages(*snapshots: Dict[str, int]) -> List[str]:
 
 
 def aggregate(items: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
-    """Roll a list of per-issue records up into one squad/board summary block."""
-    planned = [i for i in items if not i.get("unplanned")]
+    """Roll a list of per-issue records up into one squad/board summary block.
+
+    Each issue is one of three mutually-exclusive buckets:
+      - planned:   committed at sprint start.
+      - carryover: rolled in from the previous sprint after start (still committed work).
+      - unplanned: genuine new scope added mid-sprint.
+    ``planned`` + ``carryover`` make up the start snapshot (both pre-existed the sprint);
+    ``unplanned`` does not.
+    """
     unplanned = [i for i in items if i.get("unplanned")]
+    carryover = [i for i in items if i.get("carryover") and not i.get("unplanned")]
+    planned = [
+        i for i in items if not i.get("unplanned") and not i.get("carryover")
+    ]
+    committed = planned + carryover  # everything that pre-existed the sprint
 
     start_counts: Dict[str, int] = {}
-    for i in planned:
+    for i in committed:
         s = i.get("stage_at_start") or UNKNOWN_STAGE
         start_counts[s] = start_counts.get(s, 0) + 1
 
@@ -203,21 +302,35 @@ def aggregate(items: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
     total_points = sum(i.get("story_points", 0) for i in items)
     done_points = sum(i.get("story_points", 0) for i in done)
     unplanned_points = sum(i.get("story_points", 0) for i in unplanned)
+    carryover_points = sum(i.get("story_points", 0) for i in carryover)
 
     return {
         "label": label,
         "total_tasks": len(items),
         "planned_tasks": len(planned),
+        "carryover_tasks": len(carryover),
         "unplanned_tasks": len(unplanned),
         "completed_tasks": len(done),
         "total_points": round(total_points, 1),
         "completed_points": round(done_points, 1),
+        "carryover_points": round(carryover_points, 1),
         "unplanned_points": round(unplanned_points, 1),
         "completion_rate": (
             round(100 * len(done) / len(items), 1) if items else 0.0
         ),
         "start_snapshot": start_counts,
         "end_snapshot": end_counts,
+        "carryover_list": [
+            {
+                "id": i.get("id"),
+                "summary": i.get("summary"),
+                "points": i.get("story_points", 0),
+                "stage_now": i.get("stage_now"),
+                "stage_at_start": i.get("stage_at_start"),
+                "squad": i.get("squad"),
+            }
+            for i in carryover
+        ],
         "unplanned_list": [
             {
                 "id": i.get("id"),
@@ -328,6 +441,50 @@ def _ms_to_date(ms: Optional[int]) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # Network-touching entry point                                                #
 # --------------------------------------------------------------------------- #
+def _activities_by_issue(
+    client, issue_query: str
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch Stage + Sprint activity for every issue matching ``issue_query`` in one
+    paginated sweep, grouped by readable issue id.
+
+    Uses YouTrack's global ``/api/activities`` endpoint with ``issueQuery`` instead of
+    one ``get_issue_activities`` call per issue. The endpoint caps a single page well
+    below "all", so we page explicitly with ``$skip`` until a short page returns. The
+    field set matches what the replay helpers (``stage_changes``, ``sprint_entry_ts``,
+    ``current_sprint``) read, so the per-issue lists are drop-in equivalents.
+    """
+    fields = (
+        "timestamp,$type,"
+        "field(name,$type,customField(name)),"
+        "added(name,login,fullName,text),"
+        "removed(name,login,fullName,text),"
+        "target(idReadable)"
+    )
+    by_issue: Dict[str, List[Dict[str, Any]]] = {}
+    skip, page = 0, 300
+    while True:
+        batch = client.get(
+            "activities",
+            params={
+                "categories": "CustomFieldCategory,SprintCategory",
+                "issueQuery": issue_query,
+                "fields": fields,
+                "$top": page,
+                "$skip": skip,
+            },
+        )
+        if not isinstance(batch, list) or not batch:
+            break
+        for a in batch:
+            iid = (a.get("target") or {}).get("idReadable")
+            if iid:
+                by_issue.setdefault(iid, []).append(a)
+        if len(batch) < page:
+            break
+        skip += page
+    return by_issue
+
+
 def build_sprint_summary(
     agile,
     issues_client,
@@ -367,6 +524,19 @@ def build_sprint_summary(
     sprint_start = sp.get("start")
     sprint_finish = sp.get("finish")
 
+    # The immediately-preceding sprint (by start date) — used to tell genuine
+    # mid-sprint additions apart from work carried over from the previous sprint.
+    previous_sprint = None
+    if sprint_start is not None:
+        prior = [
+            s
+            for s in (b.get("sprints") or [])
+            if isinstance(s.get("start"), (int, float))
+            and s.get("start") < sprint_start
+        ]
+        if prior:
+            previous_sprint = max(prior, key=lambda s: s["start"]).get("name")
+
     full = agile.get_sprint(
         b["id"],
         sp["id"],
@@ -375,14 +545,26 @@ def build_sprint_summary(
     )
     raw_issues = full.get("issues", []) or []
 
+    # One batched activities sweep for the whole sprint instead of one call per issue.
+    # Scope it to the same sprint via the board:sprint query.
+    issue_query = f"Board {b.get('name')}: {{{sprint_name}}}"
+    try:
+        acts_by_issue = _activities_by_issue(issues_client.client, issue_query)
+    except Exception as e:  # fall back to per-issue fetches if the sweep fails
+        logger.warning("Batched activities sweep failed (%s); using per-issue.", e)
+        acts_by_issue = None
+
     issues: List[Dict[str, Any]] = []
     for i in raw_issues:
         iid = i.get("idReadable")
-        try:
-            acts = issues_client.get_issue_activities(iid)
-        except Exception as e:  # one bad issue shouldn't sink the whole report
-            logger.warning("Activities fetch failed for %s: %s", iid, e)
-            acts = []
+        if acts_by_issue is not None:
+            acts = acts_by_issue.get(iid, [])
+        else:
+            try:
+                acts = issues_client.get_issue_activities(iid)
+            except Exception as e:  # one bad issue shouldn't sink the whole report
+                logger.warning("Activities fetch failed for %s: %s", iid, e)
+                acts = []
 
         stage_now = _cf(i, "Stage")
         squad = _cf(i, "Squad") or UNKNOWN_SQUAD
@@ -390,7 +572,12 @@ def build_sprint_summary(
         created = i.get("created")
 
         entered = sprint_entry_ts(acts, sprint_name, fallback=created)
-        unplanned = is_unplanned(entered, sprint_start)
+        membership = classify_membership(
+            acts, sprint_name, sprint_start,
+            previous_sprint=previous_sprint, created=created,
+        )
+        unplanned = membership == "unplanned"
+        carryover = membership == "carryover"
         s_start = stage_at(acts, sprint_start, current_stage=stage_now)
 
         issues.append(
@@ -401,12 +588,15 @@ def build_sprint_summary(
                 "assignee": _cf(i, "Assignee"),
                 "reviewer": _cf(i, "Reviewer"),
                 "stage_now": stage_now or UNKNOWN_STAGE,
-                # planned tasks have a start status; unplanned ones weren't here yet
+                # planned & carryover work pre-existed the sprint, so it has a start
+                # status; genuine mid-sprint additions weren't here yet.
                 "stage_at_start": (s_start or UNKNOWN_STAGE) if not unplanned else None,
                 "story_points": points,
                 "entered_ts": entered,
                 "entered_date": _ms_to_date(entered),
+                "membership": membership,
                 "unplanned": unplanned,
+                "carryover": carryover,
             }
         )
 
@@ -428,6 +618,7 @@ def build_sprint_summary(
     return {
         "board": b.get("name"),
         "sprint": sprint_name,
+        "previous_sprint": previous_sprint,
         "start": _ms_to_date(sprint_start),
         "finish": _ms_to_date(sprint_finish),
         "start_ms": sprint_start,

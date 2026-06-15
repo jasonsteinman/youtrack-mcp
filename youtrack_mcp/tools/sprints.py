@@ -110,20 +110,29 @@ class SprintTools:
 
     @sync_wrapper
     def get_sprint_issues(
-        self, sprint: Optional[str] = None, board: str = DEFAULT_BOARD
+        self,
+        sprint: Optional[str] = None,
+        squad: Optional[Any] = None,
+        board: str = DEFAULT_BOARD,
     ) -> str:
         """
-        List the issues on a sprint with key fields (Stage, Assignee, Story Point).
+        List the REAL issues on a sprint (true sprint membership, read straight from the
+        agile board) with their key fields: Stage, Assignee, Reviewer, Squad, Priority,
+        Story Point, State.
 
         FORMAT: get_sprint_issues(sprint="Sprint #91", board="Dev Board")
-                get_sprint_issues()  # current sprint of the default board
+                get_sprint_issues()                       # current sprint, default board
+                get_sprint_issues(squad="Squad B")        # only one squad
 
         Args:
             sprint: Sprint name (default: the board's current sprint).
+            squad: Squad value(s) to keep, e.g. "Squad B" or ["Squad A","Squad C"]
+                (default: all squads).
             board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
 
         Returns:
-            JSON string with the list of issues on the sprint.
+            JSON string with the list of issues on the sprint and a per-Stage count
+            breakdown.
         """
         try:
             b = self.agile.find_board(board)
@@ -138,35 +147,64 @@ class SprintTools:
                 return format_json_response(
                     {"error": f"Sprint '{sprint or '(current)'}' not found on '{b.get('name')}'."}
                 )
+
+            if squad is None:
+                squad_filter = None
+            elif isinstance(squad, str):
+                squad_filter = {squad} if squad.strip() else None
+            else:
+                squad_filter = {str(s) for s in squad if str(s).strip()} or None
+
             full = self.agile.get_sprint(
                 b["id"],
                 target["id"],
                 fields="name,issues(idReadable,summary,"
                 "customFields(name,value(name,login,fullName)))",
             )
+
+            def _v(value):
+                if isinstance(value, dict):
+                    return value.get("name") or value.get("fullName") or value.get("login")
+                if isinstance(value, list):
+                    return [_v(x) for x in value] if value else None
+                return value
+
             issues = []
+            stage_counts: Dict[str, int] = {}
             for i in full.get("issues", []) or []:
                 fields = {
-                    cf.get("name"): (
-                        (cf.get("value") or {}).get("name")
-                        or (cf.get("value") or {}).get("fullName")
-                        if isinstance(cf.get("value"), dict)
-                        else cf.get("value")
-                    )
+                    cf.get("name"): _v(cf.get("value"))
                     for cf in i.get("customFields", []) or []
                 }
+                squad_val = fields.get("Squad")
+                if squad_filter and squad_val not in squad_filter:
+                    continue
+                stage = fields.get("Stage")
+                stage_counts[stage or "(none)"] = stage_counts.get(stage or "(none)", 0) + 1
+                assignee = fields.get("Assignee")
+                reviewer = fields.get("Reviewer")
                 issues.append(
                     {
                         "id": i.get("idReadable"),
                         "summary": i.get("summary"),
-                        "stage": fields.get("Stage"),
-                        "assignee": fields.get("Assignee"),
+                        "stage": stage,
+                        "state": fields.get("State"),
+                        "assignee": assignee[0] if isinstance(assignee, list) and assignee else assignee,
+                        "reviewer": reviewer[0] if isinstance(reviewer, list) and reviewer else reviewer,
+                        "squad": squad_val,
+                        "priority": fields.get("Priority"),
                         "story_point": fields.get("Story Point"),
                     }
                 )
             return format_json_response(
-                {"board": b.get("name"), "sprint": full.get("name"),
-                 "issue_count": len(issues), "issues": issues}
+                {
+                    "board": b.get("name"),
+                    "sprint": full.get("name"),
+                    "squad": (sorted(squad_filter) if squad_filter else "all"),
+                    "issue_count": len(issues),
+                    "stage_counts": stage_counts,
+                    "issues": issues,
+                }
             )
         except Exception as e:
             logger.exception("Error getting sprint issues")
@@ -643,6 +681,193 @@ class SprintTools:
             logger.exception("Error building sprint summary")
             return format_json_response({"error": str(e)})
 
+    @sync_wrapper
+    def get_stuck_tasks(
+        self,
+        sprint: Optional[str] = None,
+        squads: Optional[Any] = None,
+        hours: int = 48,
+        exclude_stages: Optional[Any] = None,
+        board: str = DEFAULT_BOARD,
+    ) -> str:
+        """
+        Find STUCK tasks: issues on a sprint sitting in the same Stage for longer
+        than `hours` (default 48). Use this for "stuck tasks" / "/stuck-tasks".
+
+        Time-in-status is now - the last Stage change (from the activity log), or the
+        issue's creation time if its Stage was never changed. `Published` and `Backlog`
+        are excluded by default; `OnHold` counts as stuck. Each stuck task comes back
+        with its developer, reviewer, stage, hours-in-status, priority and last 3
+        comments.
+
+        Fast by construction: one search + one paginated activities sweep for the WHOLE
+        sprint (no per-issue history calls), so cost is ~2 requests regardless of size.
+
+        FORMAT: get_stuck_tasks()                                  # current sprint, Squads B/C/D
+                get_stuck_tasks(sprint="Sprint #91", squads=["Squad A"])
+                get_stuck_tasks(hours=72, exclude_stages=["Published","Backlog","OnHold"])
+
+        Args:
+            sprint: Sprint name (default: the board's current sprint).
+            squads: Squad value(s) to include, e.g. "Squad A" or ["Squad B","Squad C"]
+                (default: Squad B, Squad C, Squad D). Pass an empty list for all squads.
+            hours: Stuck threshold in hours; strictly greater than this counts (default 48).
+            exclude_stages: Stages that never count as stuck
+                (default: ["Published", "Backlog"]).
+            board: Agile board name (default: YOUTRACK_DEFAULT_BOARD env var).
+
+        Returns:
+            JSON string: board, sprint, threshold, scanned/eligible/stuck counts, and a
+            `tasks` list sorted by squad then hours-in-status descending.
+        """
+        try:
+            # --- normalise inputs -------------------------------------------------
+            if squads is None:
+                squad_list = ["Squad B", "Squad C", "Squad D"]
+            elif isinstance(squads, str):
+                squad_list = [squads] if squads.strip() else []
+            else:
+                squad_list = [str(s) for s in squads if str(s).strip()]
+
+            if exclude_stages is None:
+                excluded = {"Published", "Backlog"}
+            elif isinstance(exclude_stages, str):
+                excluded = {exclude_stages}
+            else:
+                excluded = {str(s) for s in exclude_stages}
+
+            sprint_clause = f'"{sprint}"' if sprint else "{current sprint}"
+            query = f"Board {board}: {sprint_clause}"
+            if squad_list:
+                query += " Squad: " + ", ".join("{%s}" % s for s in squad_list)
+
+            now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+            def _name(v):
+                if isinstance(v, dict):
+                    return v.get("name") or v.get("fullName") or v.get("login")
+                return v
+
+            def _first(v):
+                if isinstance(v, list):
+                    return _name(v[0]) if v else None
+                return _name(v)
+
+            # --- 1) candidate issues, tight field projection ----------------------
+            issues = self.client.get(
+                "issues",
+                params={
+                    "query": query,
+                    "$top": 500,
+                    "fields": "idReadable,summary,created,"
+                    "customFields(name,value(name,login,fullName))",
+                },
+            )
+            if not isinstance(issues, list):
+                return format_json_response(
+                    {"error": "Unexpected search response.", "query": query}
+                )
+
+            cand: Dict[str, Dict[str, Any]] = {}
+            for i in issues:
+                cf = {f.get("name"): f.get("value") for f in (i.get("customFields") or [])}
+                stage = _name(cf.get("Stage"))
+                if stage in excluded:
+                    continue
+                cand[i.get("idReadable")] = {
+                    "id": i.get("idReadable"),
+                    "summary": i.get("summary"),
+                    "developer": _first(cf.get("Assignee")),
+                    "reviewer": _first(cf.get("Reviewer")),
+                    "squad": _name(cf.get("Squad")),
+                    "stage": stage,
+                    "priority": _name(cf.get("Priority")),
+                    "_created": i.get("created"),
+                    "_stage_ts": None,
+                    "_comments": [],
+                }
+
+            # --- 2) one paginated activities sweep (Stage changes + comments) -----
+            # The activities endpoint caps a single page well below "all", so page
+            # explicitly with $skip until a short page comes back.
+            act_fields = (
+                "timestamp,$type,author(name,login,fullName),field(name),"
+                "target(idReadable,$type,text,issue(idReadable))"
+            )
+            skip, page = 0, 300
+            while True:
+                batch = self.client.get(
+                    "activities",
+                    params={
+                        "categories": "CustomFieldCategory,CommentsCategory",
+                        "issueQuery": query,
+                        "fields": act_fields,
+                        "$top": page,
+                        "$skip": skip,
+                    },
+                )
+                if not isinstance(batch, list) or not batch:
+                    break
+                for a in batch:
+                    tgt = a.get("target") or {}
+                    ts = a.get("timestamp")
+                    if (a.get("field") or {}).get("name") == "Stage":
+                        r = cand.get(tgt.get("idReadable"))
+                        if r and (r["_stage_ts"] is None or (ts or 0) > r["_stage_ts"]):
+                            r["_stage_ts"] = ts
+                    elif tgt.get("text") is not None:
+                        r = cand.get((tgt.get("issue") or {}).get("idReadable"))
+                        if r:
+                            r["_comments"].append(
+                                {
+                                    "who": _name(a.get("author")),
+                                    "text": (tgt.get("text") or "")
+                                    .replace("\n", " ")
+                                    .strip()[:150],
+                                    "_ts": ts or 0,
+                                }
+                            )
+                if len(batch) < page:
+                    break
+                skip += page
+
+            # --- 3) compute hours-in-status, filter, keep last 3 comments ---------
+            stuck = []
+            for r in cand.values():
+                anchor = r["_stage_ts"] or r["_created"]
+                if not isinstance(anchor, (int, float)):
+                    continue
+                hrs = round((now_ms - anchor) / 3_600_000)
+                if hrs <= hours:
+                    continue
+                r["_comments"].sort(key=lambda c: c["_ts"])
+                r["hours_in_status"] = hrs
+                r["days_in_status"] = round(hrs / 24, 1)
+                r["last_comments"] = [
+                    {"who": c["who"], "text": c["text"]} for c in r["_comments"][-3:]
+                ]
+                for k in ("_created", "_stage_ts", "_comments"):
+                    r.pop(k, None)
+                stuck.append(r)
+
+            stuck.sort(key=lambda r: (r["squad"] or "~", -r["hours_in_status"]))
+
+            return format_json_response(
+                {
+                    "board": board,
+                    "sprint": sprint or "(current)",
+                    "squads": squad_list or "all",
+                    "threshold_hours": hours,
+                    "scanned": len(issues),
+                    "eligible": len(cand),
+                    "stuck_count": len(stuck),
+                    "tasks": stuck,
+                }
+            )
+        except Exception as e:
+            logger.exception("Error finding stuck tasks")
+            return format_json_response({"error": str(e)})
+
     def close(self) -> None:
         if hasattr(self.client, "close"):
             self.client.close()
@@ -661,13 +886,17 @@ class SprintTools:
             },
             "get_sprint_issues": {
                 "description": (
-                    "List the issues on a sprint with Stage, Assignee, and Story Point. "
-                    'Example: get_sprint_issues(sprint="Sprint #91"). Omit sprint for the '
-                    "board's current sprint."
+                    "List the REAL issues on a sprint (true membership from the board) with "
+                    "Stage, Assignee, Reviewer, Squad, Priority, Story Point, State, plus a "
+                    "per-Stage count. Optionally filter by squad. "
+                    'Example: get_sprint_issues(sprint="Sprint #91", squad="Squad B"). '
+                    "Omit sprint for the board's current sprint."
                 ),
                 "function": self.get_sprint_issues,
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
+                    "squad": "Squad(s) to keep, e.g. 'Squad B' or ['Squad A','Squad C'] "
+                    "(default: all squads)",
                     "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },
@@ -759,6 +988,26 @@ class SprintTools:
                 "function": self.sprint_summary,
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
+                    "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
+                },
+            },
+            "get_stuck_tasks": {
+                "description": (
+                    "Find STUCK tasks: sprint issues sitting in the same Stage for more "
+                    "than `hours` (default 48). Excludes Published/Backlog; OnHold counts "
+                    "as stuck. Returns developer, reviewer, stage, hours-in-status, "
+                    'priority and last 3 comments. Use for "stuck tasks". Example: '
+                    "get_stuck_tasks() or get_stuck_tasks(sprint=\"Sprint #91\", "
+                    'squads=["Squad A"], hours=72).'
+                ),
+                "function": self.get_stuck_tasks,
+                "parameter_descriptions": {
+                    "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
+                    "squads": "Squad(s) to include, e.g. 'Squad A' or ['Squad B','Squad C'] "
+                    "(default: Squad B/C/D; empty list = all squads)",
+                    "hours": "Stuck threshold in hours, strictly greater (default 48)",
+                    "exclude_stages": "Stages that never count as stuck "
+                    "(default: ['Published','Backlog'])",
                     "board": "Agile board name (default: YOUTRACK_DEFAULT_BOARD env var)",
                 },
             },

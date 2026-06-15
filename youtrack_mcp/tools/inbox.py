@@ -127,6 +127,151 @@ class InboxTools:
             return format_json_response({"error": str(e)})
 
     @sync_wrapper
+    def whatsup(self, login: Optional[str] = None, top: int = 5) -> str:
+        """
+        "What's up?" digest of your YouTrack notifications: who mentioned you, fresh
+        replies on your tickets, and replies on issues you reported — plus a short
+        "needs you" list of items waiting on your response.
+
+        FORMAT: whatsup()                 # for the current user
+                whatsup(login="jane.doe")
+
+        Does the whole thing server-side in 4 requests total (3 scoped searches + one
+        batched comment sweep over just the surfaced issues), so callers don't fan out
+        per-issue comment fetches.
+
+        Args:
+            login: YouTrack login to report for (default: the current user / "me").
+            top: How many issues to attach recent comments to (default: 5).
+
+        Returns:
+            JSON string: counts, three buckets (mentioned / my_new_comments /
+            reported_replies) and a `needs_you` list of issue ids whose latest comment
+            is from someone else.
+        """
+        try:
+            if not login:
+                me = self.client.get("users/me", params={"fields": "login"})
+                login = (me or {}).get("login")
+            if not login:
+                return format_json_response({"error": "Could not resolve current user."})
+
+            def rows(issues, *, want=("Stage", "State", "Priority", "Assignee")):
+                out = []
+                for i in issues:
+                    f = _flatten(i)
+                    out.append(
+                        {
+                            "id": i.get("idReadable"),
+                            "summary": i.get("summary"),
+                            "stage": f.get("Stage"),
+                            "state": f.get("State"),
+                            "priority": f.get("Priority"),
+                            "assignee": f.get("Assignee"),
+                            "updated": _ms_to_date(i.get("updated")),
+                        }
+                    )
+                return out
+
+            mentioned = rows(
+                self._search(f"mentions: {login} updated: {{minus 7d}} .. Today", 20)
+            )
+            my_new = rows(
+                self._search(
+                    f"for: {login} commented: {{minus 4d}} .. Today", 20
+                )
+            )
+            reported = rows(
+                self._search(
+                    f"reporter: {login} commenter: -{login} "
+                    f"commented: {{minus 7d}} .. Today",
+                    20,
+                )
+            )
+
+            # Rank for comment attachment: mentions > my-tickets > reported, deduped.
+            order: List[str] = []
+            seen = set()
+            for bucket in (mentioned, my_new, reported):
+                for r in bucket:
+                    rid = r["id"]
+                    if rid and rid not in seen:
+                        seen.add(rid)
+                        order.append(rid)
+            focus = order[: max(0, int(top))]
+
+            # One batched comment sweep over just the focus issues.
+            last_by_issue: Dict[str, List[Dict[str, Any]]] = {}
+            if focus:
+                try:
+                    acts = self.client.get(
+                        "activities",
+                        params={
+                            "categories": "CommentsCategory",
+                            "issueQuery": "issue ID: " + ", ".join(focus),
+                            "fields": "timestamp,author(login,name,fullName),"
+                            "target(text,issue(idReadable))",
+                            "$top": 300,
+                        },
+                    )
+                except Exception as ce:
+                    logger.warning("whatsup comment sweep failed: %s", ce)
+                    acts = []
+                for a in acts if isinstance(acts, list) else []:
+                    iid = ((a.get("target") or {}).get("issue") or {}).get("idReadable")
+                    if not iid:
+                        continue
+                    author = a.get("author") or {}
+                    last_by_issue.setdefault(iid, []).append(
+                        {
+                            "who": author.get("name") or author.get("fullName"),
+                            "login": author.get("login"),
+                            "when": _ms_to_date(a.get("timestamp")),
+                            "ts": a.get("timestamp") or 0,
+                            "text": ((a.get("target") or {}).get("text") or "")
+                            .replace("\n", " ")
+                            .strip()[:200],
+                        }
+                    )
+
+            # Attach last 1-2 comments; compute who's-waiting.
+            needs_you: List[str] = []
+            by_id = {r["id"]: r for b in (mentioned, my_new, reported) for r in b}
+            for iid, cs in last_by_issue.items():
+                cs.sort(key=lambda c: c["ts"])
+                last2 = [
+                    {"who": c["who"], "when": c["when"], "text": c["text"]}
+                    for c in cs[-2:]
+                ]
+                if iid in by_id:
+                    by_id[iid]["last_comments"] = last2
+                # waiting on me if the most recent comment isn't mine
+                if cs and cs[-1]["login"] and cs[-1]["login"] != login:
+                    needs_you.append(iid)
+
+            # needs_you: keep mention/my-ticket items, ranked, deduped to focus order.
+            relevant = {r["id"] for r in mentioned} | {r["id"] for r in my_new}
+            needs_you = [i for i in order if i in needs_you and i in relevant]
+
+            return format_json_response(
+                {
+                    "login": login,
+                    "counts": {
+                        "mentions": len(mentioned),
+                        "my_new_comments": len(my_new),
+                        "reported_replies": len(reported),
+                    },
+                    "mentioned": mentioned,
+                    "my_new_comments": my_new,
+                    "reported_replies": reported,
+                    "needs_you": needs_you,
+                }
+            )
+        except Exception as e:
+            logger.exception("Error building whatsup digest")
+            return format_json_response({"error": str(e)})
+
+    @sync_wrapper
     def task_summary(self, issue_id: str, comments: int = 3) -> str:
         """
         Get a compact, human-readable summary of an issue: status, priority,
@@ -205,6 +350,19 @@ class InboxTools:
                 "function": self.my_inbox,
                 "parameter_descriptions": {
                     "days": "How many days back to look (default: 7)",
+                },
+            },
+            "whatsup": {
+                "description": (
+                    "\"What's up?\" digest of your YouTrack notifications: who mentioned you, "
+                    "fresh replies on your tickets, replies on issues you reported, and a "
+                    "\"needs you\" list of items awaiting your reply. Server-side in ~4 "
+                    "requests. Use for \"what's up\" / \"/whatsup\". Example: whatsup()."
+                ),
+                "function": self.whatsup,
+                "parameter_descriptions": {
+                    "login": "YouTrack login to report for (default: current user)",
+                    "top": "How many issues to attach recent comments to (default: 5)",
                 },
             },
             "task_summary": {
