@@ -14,6 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 BASE = (os.getenv("YOUTRACK_URL") or "").rstrip("/")
+BOARD = os.getenv("YOUTRACK_DEFAULT_BOARD", "Dev Board")
 SQUADS = ["Squad B", "Squad C", "Squad D"]
 EXCLUDED_STAGES = {"Published", "Backlog"}
 THRESHOLD_HOURS = 48
@@ -57,7 +58,7 @@ def comments(iid):
 
 
 # ---- gather ----
-query = "Board Dev Board: {current sprint} Squad: {Squad B}, {Squad C}, {Squad D}"
+query = "Board " + BOARD + ": {current sprint} Squad: {Squad B}, {Squad C}, {Squad D}"
 fields = "idReadable,summary,created,customFields(name,value(name,fullName,login))"
 rows = c.get("issues", params={"query": query, "fields": fields, "$top": 200})
 eligible = [i for i in rows if cf(i, "Stage") not in EXCLUDED_STAGES]
@@ -93,7 +94,7 @@ def build_pdf(squad, items):
     doc = SimpleDocTemplate(path, pagesize=landscape(A4),
                             leftMargin=20, rightMargin=20, topMargin=22, bottomMargin=22)
     elems = [Paragraph(f"Stuck Tasks — {safe(squad)}", title),
-             Paragraph(f"Dev Board · current sprint · &gt;48h in current status · {len(items)} tasks", sub),
+             Paragraph(f"{BOARD} · current sprint · &gt;48h in current status · {len(items)} tasks", sub),
              Spacer(1, 8)]
 
     data = [[Paragraph(f"<b>{h}</b>", head) for h in HEADERS]]
