@@ -230,7 +230,7 @@ jobs:
     name: "🔨 Dev Build"
     needs: [test-unit, test-integration, test-docker]
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.build_type == 'dev_build' || github.event.inputs.build_type == 'production_release'))
+    if: github.repository == 'tonyzorin/youtrack-mcp' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.build_type == 'dev_build' || github.event.inputs.build_type == 'production_release')))
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -300,7 +300,7 @@ jobs:
     name: "🚀 Production Build"
     needs: [build-dev]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'production_release' && github.event.inputs.confirm_production == 'true'
+    if: github.repository == 'tonyzorin/youtrack-mcp' && github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'production_release' && github.event.inputs.confirm_production == 'true'
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -435,7 +435,7 @@ jobs:
     name: "📦 Publish NPM"
     needs: [build-production]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'production_release' && github.event.inputs.confirm_production == 'true'
+    if: github.repository == 'tonyzorin/youtrack-mcp' && github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'production_release' && github.event.inputs.confirm_production == 'true'
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
