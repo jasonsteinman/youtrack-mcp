@@ -97,8 +97,8 @@ delete_attachment("DEMO-123", "1-456")             # needs permission
 Jason-MCP runs straight from this repo over stdio — no Docker or npm package required.
 
 ```bash
-git clone https://github.com/jasonsteinman/fine-tuned-youtrack-mcp.git
-cd fine-tuned-youtrack-mcp
+git clone https://github.com/jasonsteinman/youtrack-mcp.git
+cd youtrack-mcp
 
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -130,7 +130,7 @@ at this repo's `main.py`:
   "mcpServers": {
     "youtrack": {
       "command": "python",
-      "args": ["/absolute/path/to/fine-tuned-youtrack-mcp/main.py"],
+      "args": ["/absolute/path/to/youtrack-mcp/main.py"],
       "env": {
         "YOUTRACK_URL": "https://your-instance.youtrack.cloud",
         "YOUTRACK_API_TOKEN": "perm-XXXXXXXX..."
@@ -173,7 +173,7 @@ Jason-MCP. The kittens are just here for morale.
 
 ## 💬 Support
 
-Questions, bugs, or ideas? Open an [issue](https://github.com/jasonsteinman/fine-tuned-youtrack-mcp/issues)
+Questions, bugs, or ideas? Open an [issue](https://github.com/jasonsteinman/youtrack-mcp/issues)
 or reach me at **maintainer@example.com**.
 
 ---

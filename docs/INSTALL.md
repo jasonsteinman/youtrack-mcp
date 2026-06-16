@@ -14,8 +14,8 @@ then add the one-word skills. ~10 minutes. Commands are given for **Windows
 ## 2. Get the code
 
 ```powershell
-git clone https://github.com/jasonsteinman/fine-tuned-youtrack-mcp.git
-cd fine-tuned-youtrack-mcp
+git clone https://github.com/jasonsteinman/youtrack-mcp.git
+cd youtrack-mcp
 ```
 
 ## 3. Create a virtual environment & install
