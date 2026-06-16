@@ -73,7 +73,7 @@ Python and `main.py`. Add it at **user** scope so it's available everywhere.
 claude mcp add youtrack -s user `
   -e YOUTRACK_URL=https://your-instance.youtrack.cloud `
   -e "YOUTRACK_API_TOKEN=perm:your-token-here" `
-  -e "YOUTRACK_DEFAULT_BOARD=Dev Board" `
+  -e "YOUTRACK_DEFAULT_BOARD=Your Board Name" `
   -- "$PWD\.venv\Scripts\python.exe" "$PWD\main.py"
 ```
 **macOS / Linux:**
@@ -81,7 +81,7 @@ claude mcp add youtrack -s user `
 claude mcp add youtrack -s user \
   -e YOUTRACK_URL=https://your-instance.youtrack.cloud \
   -e "YOUTRACK_API_TOKEN=perm:your-token-here" \
-  -e "YOUTRACK_DEFAULT_BOARD=Dev Board" \
+  -e "YOUTRACK_DEFAULT_BOARD=Your Board Name" \
   -- "$PWD/.venv/bin/python" "$PWD/main.py"
 ```
 
@@ -95,13 +95,14 @@ Verify:
 claude mcp list
 ```
 You should see `youtrack` with a ✓. In a Claude session, ask *"list the sprints on
-the Dev Board board"* — if you get sprints back, you're connected.
+your board"* — if you get sprints back, you're connected.
 
 ## 7. Add the skills (optional but recommended)
 
-The one-word commands (`/sprint-summary`, `/stuck-tasks`, `/whatsup`, …) live in
-[`../skills/`](../skills). Follow [`../skills/README.md`](../skills/README.md) — it's a
-one-minute copy step plus setting your login in `~/.claude/youtrack.md`.
+The one-word commands (`/sprint-summary`, `/stuck-tasks`, `/whatsup`, …) are
+distributed separately (they're specific to your team's board/workflow). Get the
+skills pack from your team, then copy the `*.md` files into `~/.claude/commands/`
+and set your login in `~/.claude/youtrack.md`.
 
 ## 8. Use it
 
@@ -118,7 +119,7 @@ Just talk to Claude:
 | `claude mcp list` shows ✗ for youtrack | Re-check the absolute paths to `python` and `main.py`; run `python main.py --version` manually to see the error. |
 | "API token is required" | Token missing/wrong in `-e` or `.env`. Regenerate it (step 4). |
 | Tools work but skills don't appear | Did you copy `skills/*.md` into `~/.claude/commands/` and restart Claude? |
-| Sprint/board tools return nothing | Check `YOUTRACK_DEFAULT_BOARD` matches the board's exact name (e.g. `Dev Board`). |
+| Sprint/board tools return nothing | Check `YOUTRACK_DEFAULT_BOARD` matches the board's exact name. |
 | PDF/HTML report script errors | Run it with the repo's venv Python; `pip install -r requirements.txt` for `reportlab`. |
 
 Stuck? **maintainer@example.com**
