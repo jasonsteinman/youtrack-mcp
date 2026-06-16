@@ -2,6 +2,8 @@
 Unit tests for YouTrack MCP tool loading and prioritization.
 """
 
+from contextlib import ExitStack
+
 import pytest
 from unittest.mock import patch, Mock
 
@@ -92,36 +94,39 @@ class TestToolLoading:
     def test_loader_handles_empty_tools(self, mock_youtrack_client):
         """Test that loader handles tool classes with no tools gracefully."""
 
-        # Create mock instances that return empty tool definitions
-        empty_mock = Mock()
-        empty_mock.get_tool_definitions.return_value = {}
+        def _empty_tool_class():
+            # Each tool class must be its own mock so _get_tools_from_class finds
+            # no real tool methods on it (only the filtered Mock helpers).
+            m = Mock(spec=["get_tool_definitions", "close"])
+            m.get_tool_definitions.return_value = {}
+            return m
 
-        with patch(
-            "youtrack_mcp.tools.issues.IssueTools", return_value=empty_mock
-        ):
-            with patch(
-                "youtrack_mcp.tools.projects.ProjectTools",
-                return_value=empty_mock,
-            ):
-                with patch(
-                    "youtrack_mcp.tools.users.UserTools",
-                    return_value=empty_mock,
-                ):
-                    with patch(
-                        "youtrack_mcp.tools.search.SearchTools",
-                        return_value=empty_mock,
-                    ):
-                        with patch(
-                            "youtrack_mcp.tools.resources.ResourcesTools",
-                            return_value=empty_mock,
-                        ):
-                            tools = load_all_tools()
+        # Patch every tool class the loader instantiates so that none contribute
+        # tools; the loader should then return an empty dict.
+        tool_class_paths = [
+            "youtrack_mcp.tools.issues.IssueTools",
+            "youtrack_mcp.tools.projects.ProjectTools",
+            "youtrack_mcp.tools.users.UserTools",
+            "youtrack_mcp.tools.search.SearchTools",
+            "youtrack_mcp.tools.resources.ResourcesTools",
+            "youtrack_mcp.tools.reports.ReportTools",
+            "youtrack_mcp.tools.sprints.SprintTools",
+            "youtrack_mcp.tools.team_actions.TeamTools",
+            "youtrack_mcp.tools.inbox.InboxTools",
+            "youtrack_mcp.tools.composites.CompositeTools",
+        ]
 
-                            # Should return empty dict when all tool classes are empty
-                            assert isinstance(tools, dict)
-                            assert (
-                                len(tools) == 0
-                            )  # No tools when all classes are empty
+        with ExitStack() as stack:
+            for path in tool_class_paths:
+                stack.enter_context(
+                    patch(path, return_value=_empty_tool_class())
+                )
+
+            tools = load_all_tools()
+
+            # Should return empty dict when all tool classes are empty
+            assert isinstance(tools, dict)
+            assert len(tools) == 0  # No tools when all classes are empty
 
     @pytest.mark.unit
     def test_loader_returns_dict(self, mock_youtrack_client):
