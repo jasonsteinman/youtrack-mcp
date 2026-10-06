@@ -28,6 +28,9 @@ TOOL_PRIORITY = {
         "get_custom_fields": 50,  # Lower priority in SearchTools
         "search_with_custom_fields": 100,  # High priority for search_with_custom_fields in SearchTools
     },
+    "KnowledgeBaseTools": {
+        "get_article": 100,  # Always-on read-only version wins over the KB-flag one
+    },
     "ResourcesTools": {
         "get_issue": 200,  # Higher priority for resource-based tools
         "get_project": 200,
@@ -164,6 +167,7 @@ def load_all_tools() -> Dict[str, Callable]:
     from youtrack_mcp.tools.team_actions import TeamTools
     from youtrack_mcp.tools.inbox import InboxTools
     from youtrack_mcp.tools.composites import CompositeTools
+    from youtrack_mcp.tools.knowledge_base import KnowledgeBaseTools
 
     # Initialize tool classes
     tool_classes = [
@@ -177,6 +181,7 @@ def load_all_tools() -> Dict[str, Callable]:
         TeamTools(),
         InboxTools(),
         CompositeTools(),
+        KnowledgeBaseTools(),
     ]
 
     # Optionally enable Knowledge Base tools via environment flag

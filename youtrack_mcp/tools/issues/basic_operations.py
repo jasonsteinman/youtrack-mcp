@@ -242,25 +242,57 @@ class BasicOperations:
             additional_fields: Additional fields to update as dict (optional)
 
         Returns:
-            JSON string with the updated issue details
+            JSON string with an explicit success flag, the issue id, the fields
+            that were changed and the issue as it reads after the update
         """
+        updated_fields = [
+            name
+            for name, value in (
+                ("summary", summary),
+                ("description", description),
+                ("uses_markdown", uses_markdown),
+            )
+            if value is not None
+        ] + list((additional_fields or {}).keys())
+        if not updated_fields:
+            return format_json_response(
+                {"status": "error", "issue_id": issue_id, "error": "Nothing to update."}
+            )
         try:
-            result = self.issues_api.update_issue(
+            self.issues_api.update_issue(
                 issue_id=issue_id,
                 summary=summary,
                 description=description,
                 uses_markdown=uses_markdown,
                 additional_fields=additional_fields,
             )
-            # Convert Issue object to dict if needed
-            if hasattr(result, "model_dump"):
-                result = result.model_dump()
-            elif hasattr(result, "__dict__"):
-                result = result.__dict__
-            return format_json_response(result)
         except Exception as e:
             logger.exception(f"Error updating issue {issue_id}")
-            return format_json_response({"error": str(e), "status": "error"})
+            return format_json_response({"error": str(e), "status": "error", "issue_id": issue_id})
+
+        result: Dict[str, Any] = {
+            "status": "success",
+            "issue_id": issue_id,
+            "updated_fields": updated_fields,
+        }
+        # The POST response doesn't carry the issue fields, so read them back.
+        try:
+            current = self.client.get(
+                f"issues/{issue_id}",
+                params={"fields": "idReadable,summary,description,usesMarkdown,updated"},
+            )
+            text = current.get("description") or ""
+            result["issue_id"] = current.get("idReadable", issue_id)
+            result["issue"] = {
+                "summary": current.get("summary"),
+                "description_length": len(text),
+                "description_preview": text[:500],
+                "uses_markdown": current.get("usesMarkdown"),
+                "updated": current.get("updated"),
+            }
+        except Exception as e:
+            result["read_back_error"] = str(e)
+        return format_json_response(result)
 
     @sync_wrapper
     def delete_issue(self, issue_id: str) -> str:
@@ -459,10 +491,17 @@ class BasicOperations:
         """
         try:
             result = self.issues_api.add_comment(issue_id, text)
-            return format_json_response(result)
+            return format_json_response(
+                {
+                    "status": "success",
+                    "issue_id": issue_id,
+                    "comment_id": result.get("id") if isinstance(result, dict) else None,
+                    "comment": result,
+                }
+            )
         except Exception as e:
             logger.exception(f"Error adding comment to issue {issue_id}")
-            return format_json_response({"error": str(e)})
+            return format_json_response({"error": str(e), "status": "error", "issue_id": issue_id})
 
     def get_tool_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Get tool definitions for basic operation functions."""

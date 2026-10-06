@@ -114,6 +114,7 @@ class TestToolLoading:
             "youtrack_mcp.tools.team_actions.TeamTools",
             "youtrack_mcp.tools.inbox.InboxTools",
             "youtrack_mcp.tools.composites.CompositeTools",
+            "youtrack_mcp.tools.knowledge_base.KnowledgeBaseTools",
         ]
 
         with ExitStack() as stack:

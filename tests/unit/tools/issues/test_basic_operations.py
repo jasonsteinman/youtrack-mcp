@@ -355,7 +355,14 @@ class TestBasicOperations:
         }
         
         self.mock_issues_api.update_issue.return_value = mock_updated_issue
-        
+        self.mock_client.get.return_value = {
+            "idReadable": issue_id,
+            "summary": new_summary,
+            "description": new_description,
+            "usesMarkdown": True,
+            "updated": 1700000000000,
+        }
+
         # Act
         result = self.basic_ops.update_issue(
             issue_id=issue_id,
@@ -366,9 +373,12 @@ class TestBasicOperations:
         result_data = json.loads(result)
         
         # Assert
-        assert result_data["id"] == "3-123"
-        assert result_data["summary"] == new_summary
-        assert result_data["description"] == new_description
+        assert result_data["status"] == "success"
+        assert result_data["issue_id"] == "DEMO-123"
+        assert result_data["updated_fields"] == ["summary", "description", "priority"]
+        assert result_data["issue"]["summary"] == new_summary
+        assert result_data["issue"]["description_preview"] == new_description
+        assert result_data["issue"]["description_length"] == len(new_description)
         
         # Verify API call
         self.mock_issues_api.update_issue.assert_called_once_with(
@@ -395,6 +405,10 @@ class TestBasicOperations:
             "description": new_description,
         }
         self.mock_issues_api.update_issue.return_value = mock_updated_issue
+        self.mock_client.get.return_value = {
+            "idReadable": issue_id,
+            "description": new_description,
+        }
 
         # Act
         result = self.basic_ops.update_issue(
@@ -403,7 +417,9 @@ class TestBasicOperations:
         result_data = json.loads(result)
 
         # Assert
-        assert result_data["description"] == new_description
+        assert result_data["status"] == "success"
+        assert result_data["updated_fields"] == ["description"]
+        assert result_data["issue"]["description_preview"] == new_description
         self.mock_issues_api.update_issue.assert_called_once_with(
             issue_id=issue_id,
             summary=None,
@@ -449,14 +465,36 @@ class TestBasicOperations:
         mock_updated_issue = SimpleObject()
         
         self.mock_issues_api.update_issue.return_value = mock_updated_issue
-        
+        # The API returns null fields (the real-world bug); the tool reads the issue back.
+        self.mock_client.get.return_value = {"idReadable": issue_id, "summary": new_summary}
+
         # Act
         result = self.basic_ops.update_issue(issue_id=issue_id, summary=new_summary)
         result_data = json.loads(result)
-        
+
         # Assert
-        assert result_data["id"] == "3-123"
-        assert result_data["summary"] == new_summary
+        assert result_data["status"] == "success"
+        assert result_data["issue"]["summary"] == new_summary
+
+    def test_update_issue_read_back_failure_still_reports_success(self):
+        """The write succeeded, so a failed read-back must not turn into an error."""
+        self.mock_issues_api.update_issue.return_value = Mock()
+        self.mock_client.get.side_effect = Exception("timeout")
+
+        result_data = json.loads(
+            self.basic_ops.update_issue(issue_id="DEMO-1", description="x")
+        )
+
+        assert result_data["status"] == "success"
+        assert result_data["issue_id"] == "DEMO-1"
+        assert "timeout" in result_data["read_back_error"]
+
+    def test_update_issue_nothing_to_update(self):
+        """Calling update_issue with no fields is an explicit error, not a silent no-op."""
+        result_data = json.loads(self.basic_ops.update_issue(issue_id="DEMO-1"))
+
+        assert result_data["status"] == "error"
+        self.mock_issues_api.update_issue.assert_not_called()
 
     def test_update_issue_api_error(self):
         """Test update_issue when API call fails."""
@@ -492,9 +530,11 @@ class TestBasicOperations:
         result_data = json.loads(result)
         
         # Assert - verify key fields (format_json_response may add ISO dates)
-        assert result_data["id"] == mock_comment_result["id"]
-        assert result_data["text"] == mock_comment_result["text"] 
-        assert result_data["author"] == mock_comment_result["author"]
+        assert result_data["status"] == "success"
+        assert result_data["issue_id"] == issue_id
+        assert result_data["comment_id"] == mock_comment_result["id"]
+        assert result_data["comment"]["text"] == mock_comment_result["text"]
+        assert result_data["comment"]["author"] == mock_comment_result["author"]
         
         # Verify API call
         self.mock_issues_api.add_comment.assert_called_once_with(issue_id, comment_text)

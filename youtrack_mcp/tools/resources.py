@@ -35,6 +35,114 @@ URI_TEMPLATES = {
 }
 
 
+# --- search_issues helpers (module-level so the loader doesn't expose them as tools) ---
+
+COMPACT_SEARCH_FIELDS = ["id", "summary", "State", "Stage", "Assignee", "Priority", "updated"]
+
+# Plain issue attributes selectable in search_issues(fields=...), mapped to API fields.
+BASE_SEARCH_FIELDS = {
+    "id": "idReadable",
+    "summary": "summary",
+    "description": "description",
+    "project": "project(shortName)",
+    "reporter": "reporter(login,fullName)",
+    "created": "created",
+    "updated": "updated",
+    "resolved": "resolved",
+    "url": "idReadable",
+}
+
+CUSTOM_VALUE_FIELDS = "customFields(name,value(name,login,fullName,presentation,text))"
+
+
+def site_url(client) -> str:
+    """The YouTrack web root (base URL without the /api suffix)."""
+    base = (client.base_url or "").rstrip("/")
+    return base[: -len("/api")] if base.endswith("/api") else base
+
+
+def search_fields_param(wanted) -> str:
+    """Build the API `fields` parameter for a list of requested field names."""
+    parts = ["idReadable"]
+    needs_custom = False
+    for name in wanted:
+        api = BASE_SEARCH_FIELDS.get(name.lower())
+        if api:
+            if api not in parts:
+                parts.append(api)
+        else:
+            needs_custom = True
+    if needs_custom:
+        parts.append(CUSTOM_VALUE_FIELDS)
+    return ",".join(parts)
+
+
+def custom_value(value):
+    """Flatten a custom-field value to a name, a list of names, or a scalar."""
+    if isinstance(value, list):
+        return [custom_value(v) for v in value]
+    if isinstance(value, dict):
+        for key in ("fullName", "name", "presentation", "text", "login"):
+            if value.get(key) is not None:
+                return value[key]
+        return None
+    return value
+
+
+def project_issue(issue, wanted, site, compact=False):
+    """Reduce a raw issue to the requested fields.
+
+    Custom fields missing from the issue are omitted in compact mode (e.g. no Stage
+    in a project without one) and returned as null when asked for explicitly.
+    """
+    by_name = {
+        (cf.get("name") or "").lower(): cf for cf in issue.get("customFields") or []
+    }
+    out = {}
+    for name in wanted:
+        key = name.lower()
+        if key == "id":
+            out["id"] = issue.get("idReadable")
+        elif key == "url":
+            out["url"] = f"{site}/issue/{issue.get('idReadable')}"
+        elif key == "project":
+            out["project"] = (issue.get("project") or {}).get("shortName")
+        elif key == "reporter":
+            reporter = issue.get("reporter") or {}
+            out["reporter"] = reporter.get("fullName") or reporter.get("login")
+        elif key in BASE_SEARCH_FIELDS:
+            out[key] = issue.get(key)
+        elif key in by_name:
+            out[name] = custom_value(by_name[key].get("value"))
+        elif not compact:
+            out[name] = None
+    return out
+
+
+def search_resource(client, query) -> str:
+    """Full-field search wrapped in the MCP resource envelope (for read_resource)."""
+    from youtrack_mcp.api.issues import ISSUE_FIELDS
+
+    try:
+        results = client.get(
+            "issues", params={"query": query, "$top": 100, "fields": ISSUE_FIELDS}
+        )
+        return json.dumps(
+            {
+                "contents": [
+                    {
+                        "uri": URI_TEMPLATES["search"].format(query=query),
+                        "mimeType": "application/json",
+                        "text": json.dumps(results),
+                    }
+                ]
+            }
+        )
+    except Exception as e:
+        logger.exception(f"Error searching issues with query: {query}")
+        return json.dumps({"error": str(e)})
+
+
 class ResourcesTools:
     """MCP Resources implementation for YouTrack."""
 
@@ -230,7 +338,7 @@ class ResourcesTools:
                     return self.get_all_users()
                 elif path[0] == "search" and "query" in query_params:
                     query = query_params["query"][0]
-                    return self.search_issues(query)
+                    return search_resource(self.client, query)
                 elif path[0] == "articles":
                     # List articles (basic list)
                     articles = self.client.get(
@@ -646,30 +754,65 @@ class ResourcesTools:
             logger.exception(f"Error getting user: {user_id}")
             return json.dumps({"error": str(e)})
 
-    def search_issues(self, query: str) -> str:
-        """Search issues as a resource."""
+    def search_issues(
+        self, query: str, limit: int = 20, offset: int = 0, fields: str = "compact"
+    ) -> str:
+        """
+        Search issues with YouTrack query syntax, paginated, returning only the fields asked for.
+
+        FORMAT: search_issues(query="project: DEMO #Unresolved", limit=20, offset=0, fields="compact")
+
+        Args:
+            query: YouTrack search query, e.g. "project: DEMO #Unresolved"
+            limit: Max issues to return (1-100, default 20)
+            offset: Number of issues to skip, for paging (default 0)
+            fields: "compact" (id, summary, state, stage, assignee, priority, updated),
+                    "full" (every field incl. description and all custom fields), or a
+                    comma-separated list such as "id,summary,description,Squad,Story Point".
+                    Names other than id/summary/description/project/reporter/created/
+                    updated/resolved/url are treated as custom field names.
+
+        Returns:
+            JSON with the issues plus offset, limit, has_more and next_offset for paging
+        """
         try:
-            from youtrack_mcp.api.issues import ISSUE_FIELDS
+            limit = max(1, min(int(limit), 100))
+            offset = max(0, int(offset))
+            spec = (fields or "compact").strip()
+            # Ask for one extra issue to know whether another page exists.
+            params = {"query": query, "$top": limit + 1, "$skip": offset}
+            if spec.lower() == "full":
+                from youtrack_mcp.api.issues import ISSUE_FIELDS
 
-            results = self.client.get(
-                "issues",
-                params={"query": query, "$top": 100, "fields": ISSUE_FIELDS},
-            )
-
+                params["fields"] = ISSUE_FIELDS
+                raw = self.client.get("issues", params=params) or []
+                issues = raw[:limit]
+            else:
+                compact = spec.lower() == "compact"
+                wanted = (
+                    COMPACT_SEARCH_FIELDS
+                    if compact
+                    else [f.strip() for f in spec.split(",") if f.strip()]
+                )
+                params["fields"] = search_fields_param(wanted)
+                raw = self.client.get("issues", params=params) or []
+                site = site_url(self.client)
+                issues = [project_issue(i, wanted, site, compact) for i in raw[:limit]]
+            has_more = len(raw) > limit
             return json.dumps(
                 {
-                    "contents": [
-                        {
-                            "uri": URI_TEMPLATES["search"].format(query=query),
-                            "mimeType": "application/json",
-                            "text": json.dumps(results),
-                        }
-                    ]
+                    "query": query,
+                    "offset": offset,
+                    "limit": limit,
+                    "returned": len(issues),
+                    "has_more": has_more,
+                    "next_offset": offset + len(issues) if has_more else None,
+                    "issues": issues,
                 }
             )
         except Exception as e:
             logger.exception(f"Error searching issues with query: {query}")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": str(e), "status": "error"})
 
     def close(self) -> None:
         """Close any resources."""
@@ -741,9 +884,18 @@ class ResourcesTools:
                 "parameter_descriptions": {"user_id": "The user ID (e.g., '1-1')"},
             },
             "search_issues": {
-                "description": "Search issues as a resource.",
+                "description": (
+                    "Search issues with YouTrack query syntax. Paginated (limit/offset, "
+                    "has_more/next_offset in the result) and compact by default: id, summary, "
+                    "state, stage, assignee, priority, updated. Use fields='full' for every "
+                    "field or a list like 'id,summary,description,Squad'. Example: "
+                    "search_issues(query='project: DEMO #Unresolved', limit=20, offset=0)"
+                ),
                 "parameter_descriptions": {
-                    "query": "The search query (e.g., 'project: DEMO #Unresolved')"
+                    "query": "The search query (e.g., 'project: DEMO #Unresolved')",
+                    "limit": "Max issues to return, 1-100 (default 20)",
+                    "offset": "Issues to skip for paging (default 0); use next_offset from the previous page",
+                    "fields": "'compact' (default), 'full', or comma-separated field names",
                 },
             },
         }

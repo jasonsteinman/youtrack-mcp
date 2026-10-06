@@ -656,15 +656,15 @@ class TestResourcesToolsHelperMethods:
         mock_client.get.return_value = [
             {"id": "2-123", "summary": "Search Result"}
         ]
+        mock_client.base_url = "https://test.youtrack.cloud/api"
 
         tools = ResourcesTools()
         result = tools.search_issues("project: DEMO")
 
         result_data = json.loads(result)
-        content = result_data["contents"][0]
-        search_data = json.loads(content["text"])
-        assert len(search_data) == 1
-        assert search_data[0]["summary"] == "Search Result"
+        assert result_data["returned"] == 1
+        assert result_data["has_more"] is False
+        assert result_data["issues"][0]["summary"] == "Search Result"
 
 
 class TestResourcesToolsClose:
