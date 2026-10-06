@@ -281,6 +281,14 @@ class Utilities:
                     "attachment_id": "Attachment ID like '1-123'",
                 },
             },
+            "add_attachment": {
+                "description": 'Upload a local file (only from the allowed inbox/ or outbox/ folders, max 20 MB by default) to an issue, optionally posting a comment that references it. Returns the attachment id, name, size and URL. Example: add_attachment(issue_id="DEMO-123", file_path="/home/bot/tg-topics/t1/inbox/data.csv", comment="Export attached")',
+                "parameter_descriptions": {
+                    "issue_id": "Issue identifier like 'DEMO-123'",
+                    "file_path": "Local path of the file (must be inside an allowed inbox/ or outbox/ folder)",
+                    "comment": "Optional comment to post with the attachment",
+                },
+            },
             "delete_attachment": {
                 "description": 'Delete an attachment from an issue. Requires appropriate permissions. Example: delete_attachment(issue_id="DEMO-123", attachment_id="1-123")',
                 "parameter_descriptions": {

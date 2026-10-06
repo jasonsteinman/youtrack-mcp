@@ -189,6 +189,10 @@ class IssueTools:
         """Get attachment content as base64."""
         return self.attachments.get_attachment_content(issue_id, attachment_id)
 
+    def add_attachment(self, issue_id: str, file_path: str, comment: Optional[str] = None) -> str:
+        """Upload a local file (from an allowed inbox/outbox folder) to an issue."""
+        return self.attachments.add_attachment(issue_id, file_path, comment)
+
     def delete_attachment(self, issue_id: str, attachment_id: str) -> str:
         """Delete an attachment from an issue."""
         return self.attachments.delete_attachment(issue_id, attachment_id)

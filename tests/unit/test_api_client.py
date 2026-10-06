@@ -504,3 +504,31 @@ class TestExceptionClasses:
         assert isinstance(error, YouTrackAPIError)
         assert str(error) == "Internal server error"
         assert error.status_code == 500
+
+
+class TestPostMultipart:
+    """Regression: uploads were sent as application/json and YouTrack answered 400."""
+
+    @pytest.mark.unit
+    def test_multipart_upload_does_not_send_json_content_type(self):
+        client = YouTrackClient(base_url="https://yt.example.com", api_token="perm:x")
+        assert client.session.headers.get("Content-Type") == "application/json"
+        sent = {}
+
+        def fake_send(prepared, **kwargs):
+            sent["content_type"] = prepared.headers.get("Content-Type")
+            sent["auth"] = prepared.headers.get("Authorization")
+            response = Mock(status_code=200, headers={"Content-Type": "application/json"})
+            response.json.return_value = [{"id": "7-1"}]
+            response.text = '[{"id": "7-1"}]'
+            response.content = response.text.encode()
+            return response
+
+        with patch.object(client.session, "send", side_effect=fake_send):
+            result = client.post_multipart(
+                "issues/DEMO-1/attachments", files={"upload": ("a.txt", b"hi", "text/plain")}
+            )
+
+        assert sent["content_type"].startswith("multipart/form-data; boundary=")
+        assert sent["auth"] == "Bearer perm:x"
+        assert result == [{"id": "7-1"}]

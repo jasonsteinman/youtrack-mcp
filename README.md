@@ -90,6 +90,20 @@ get_issue_comments("DEMO-123")
 get_issue_raw("DEMO-123")                          # raw data incl. attachments
 get_attachment_content("DEMO-123", "1-456")        # download as base64
 delete_attachment("DEMO-123", "1-456")             # needs permission
+
+# Upload a local file, optionally with a comment that links to it.
+# Only files inside YOUTRACK_ATTACHMENT_ALLOWED_DIRS (default ~/tg-topics/*/inbox and
+# ~/tg-topics/*/outbox) are accepted; '..', symlinks leaving those folders and files over
+# YOUTRACK_ATTACHMENT_MAX_MB (default 20) are rejected.
+add_attachment("DEMO-123", "/home/bot/tg-topics/t1/inbox/data.csv", comment="Export")
+```
+
+### Search (paginated, compact) and Knowledge Base
+```python
+search_issues("project: DEMO #Unresolved")                    # 20 compact issues + has_more/next_offset
+search_issues("project: DEMO", limit=50, offset=50)           # next page
+search_issues("project: DEMO", fields="id,summary,Squad,description")  # pick fields; "full" = everything
+get_article("KB-A-12")                                        # article title, content, parent, attachments
 ```
 
 ## 🛠️ Install & run (from source)
