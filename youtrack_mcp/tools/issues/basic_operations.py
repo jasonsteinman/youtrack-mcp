@@ -167,20 +167,18 @@ class BasicOperations:
 
             logger.info(f"Creating issue in project {project_id}: {summary}")
 
-            # InitiatedBy goes into the creation POST itself; resolve the user first
-            # so a bad login fails before anything is created.
+            # InitiatedBy goes into the creation POST itself. A bad login never
+            # blocks the issue: it is created without the field and the error reported.
             initiator_entry, initiator_report = None, {}
             if initiated_by:
                 try:
                     initiator_entry, warning = user_field_payload(
                         self.issues_api.client, project_id, INITIATED_BY_FIELD, initiated_by
                     )
+                    if warning:
+                        initiator_report["initiated_by_warning"] = warning
                 except ValueError as e:
-                    return format_json_response(
-                        {"error": f"initiated_by: {e} No issue was created.", "status": "error"}
-                    )
-                if warning:
-                    initiator_report["initiated_by_warning"] = warning
+                    initiator_report["initiated_by_error"] = str(e)
 
             # Call the API client to create the issue
             try:

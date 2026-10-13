@@ -87,9 +87,10 @@ class CompositeTools:
             story_point: Integer story points (optional).
             board: Agile board for the sprint (default: YOUTRACK_DEFAULT_BOARD env var).
             initiated_by: Name or login of the person who asked for the task; set in the
-                InitiatedBy field in the creation call itself (optional). Unknown users
-                fail before anything is created; a project without the field is
-                skipped with `initiated_by_warning`.
+                InitiatedBy field in the creation call itself (optional). Reported as
+                `fields_set.InitiatedBy`. A project without the field is skipped with
+                `initiated_by_warning`; an unknown user or rejected value still creates
+                the task and is reported in `initiated_by_error`.
 
         Returns:
             JSON string with the new issue id and a per-step result map.
@@ -105,21 +106,19 @@ class CompositeTools:
                     return format_json_response({"error": f"Project '{project}' not found."})
                 project_id = proj.id
 
-            # InitiatedBy goes into the creation POST itself. Resolve the user first
-            # so a bad login fails before anything is created.
-            initiator_entry, initiator_login = None, None
+            # InitiatedBy goes into the creation POST itself. A bad login never
+            # blocks the task: it is created without the field and the error reported.
+            initiator_entry, initiator_login, resolve_error = None, None, None
             if initiated_by:
                 try:
                     initiator_login = self.team._resolve_login(initiated_by)
                     initiator_entry, warning = user_field_payload(
                         self.client, project_id, INITIATED_BY_FIELD, initiator_login
                     )
+                    if warning:
+                        steps["initiated_by_warning"] = warning
                 except ValueError as e:
-                    return format_json_response(
-                        {"error": f"initiated_by: {e} No task was created."}
-                    )
-                if warning:
-                    steps["initiated_by_warning"] = warning
+                    resolve_error = str(e)
 
             issue, initiator_error = create_with_user_field(
                 self.issues_api, project_id, summary, description,
@@ -135,8 +134,8 @@ class CompositeTools:
             info = self.client.get(f"issues/{db_id}", params={"fields": "idReadable"})
             issue_id = info.get("idReadable", db_id) if isinstance(info, dict) else db_id
             steps["created"] = issue_id
-            if initiator_error:
-                steps["initiated_by_error"] = initiator_error
+            if resolve_error or initiator_error:
+                steps["initiated_by_error"] = resolve_error or initiator_error
             elif initiator_entry:
                 fields_set[INITIATED_BY_FIELD] = initiator_login
         except Exception as e:

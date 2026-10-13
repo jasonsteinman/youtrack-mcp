@@ -93,7 +93,7 @@ create_task(project="DEMO", summary="...", initiated_by="sam.lee")
 → {"issue": "DEMO-123", "result": {"fields_set": {"InitiatedBy": "sam.lee"}}}
 ```
 
-- Unknown user → error, **nothing is created**.
+- Unknown user → task created without it, `initiated_by_error` explains why.
 - Project has no `InitiatedBy` field → task created, `initiated_by_warning` explains the skip.
 - YouTrack rejects the value (user not in the field's allowed users) → task created
   without it, `initiated_by_error` carries YouTrack's message.
