@@ -156,3 +156,57 @@ class TestClientErrorDetail:
         }
         with pytest.raises(ValidationError, match="Value is not allowed \\(field: value\\)"):
             client._handle_response(resp)
+
+
+class TestCreateTask:
+    """create_task(initiated_by=...) end to end, with the API layer mocked."""
+
+    @pytest.fixture
+    def tools(self):
+        with patch("youtrack_mcp.tools.composites.YouTrackClient"), \
+             patch("youtrack_mcp.tools.composites.TeamTools"), \
+             patch("youtrack_mcp.tools.composites.SprintTools"):
+            from youtrack_mcp.tools.composites import CompositeTools
+
+            t = CompositeTools()
+        t.projects_api = Mock()
+        t.projects_api.get_project_by_name.return_value = Mock(id="0-1")
+        t.issues_api = Mock()
+        t.issues_api.create_issue.return_value = Mock(id="2-1")
+        t.team._resolve_login.side_effect = lambda x: x
+        t.client = _client()
+        orig_get = t.client.get.side_effect
+        t.client.get.side_effect = lambda ep, params=None, **kw: (
+            {"idReadable": "DEMO-1"} if ep == "issues/2-1" else orig_get(ep, params)
+        )
+        return t
+
+    def test_initiated_by_set_at_creation(self, tools):
+        out = json.loads(tools.create_task(project="DEMO", summary="t", initiated_by="jane.doe"))
+        assert out["result"]["fields_set"] == {"InitiatedBy": "jane.doe"}
+        tools.issues_api.create_issue.assert_called_once()
+        sent = tools.issues_api.create_issue.call_args.kwargs["additional_fields"]
+        assert sent["customFields"][0]["name"] == "InitiatedBy"
+
+    def test_project_without_field_warns(self, tools):
+        tools.client = _client(project_fields=PROJECT_FIELDS[:1])
+        orig_get = tools.client.get.side_effect
+        tools.client.get.side_effect = lambda ep, params=None, **kw: (
+            {"idReadable": "DEMO-1"} if ep == "issues/2-1" else orig_get(ep, params)
+        )
+        out = json.loads(tools.create_task(project="DEMO", summary="t", initiated_by="jane.doe"))
+        assert out["status"] == "success"
+        assert "no 'InitiatedBy' field" in out["result"]["initiated_by_warning"]
+        assert "fields_set" not in out["result"]
+
+    def test_invalid_login_still_creates_and_reports(self, tools):
+        tools.team._resolve_login.side_effect = ValueError("No user matches 'ghost'.")
+        out = json.loads(tools.create_task(project="DEMO", summary="t", initiated_by="ghost"))
+        assert out["status"] == "success" and out["issue"] == "DEMO-1"
+        assert "No user matches 'ghost'" in out["result"]["initiated_by_error"]
+        tools.issues_api.create_issue.assert_called_once_with("0-1", "t", None)
+
+    def test_without_initiated_by_unchanged(self, tools):
+        out = json.loads(tools.create_task(project="DEMO", summary="t"))
+        assert out["result"] == {"created": "DEMO-1"}
+        tools.issues_api.create_issue.assert_called_once_with("0-1", "t", None)
