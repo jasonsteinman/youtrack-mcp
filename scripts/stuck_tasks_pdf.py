@@ -15,7 +15,10 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 BASE = (os.getenv("YOUTRACK_URL") or "").rstrip("/")
 BOARD = os.getenv("YOUTRACK_DEFAULT_BOARD", "Dev Board")
-SQUADS = ["Squad B", "Squad C", "Squad D"]
+# Comma-separated squads to report on, e.g. "Squad A,Squad B" (required).
+SQUADS = [s.strip() for s in os.getenv("YOUTRACK_STUCK_SQUADS", "").split(",") if s.strip()]
+if not SQUADS:
+    sys.exit("Set YOUTRACK_STUCK_SQUADS, e.g. \"Squad A,Squad B\".")
 EXCLUDED_STAGES = {"Published", "Backlog"}
 THRESHOLD_HOURS = 48
 OUT_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
@@ -58,7 +61,7 @@ def comments(iid):
 
 
 # ---- gather ----
-query = "Board " + BOARD + ": {current sprint} Squad: {Squad B}, {Squad C}, {Squad D}"
+query = "Board " + BOARD + ": {current sprint} Squad: " + ", ".join("{" + s + "}" for s in SQUADS)
 fields = "idReadable,summary,created,customFields(name,value(name,fullName,login))"
 rows = c.get("issues", params={"query": query, "fields": fields, "$top": 200})
 eligible = [i for i in rows if cf(i, "Stage") not in EXCLUDED_STAGES]

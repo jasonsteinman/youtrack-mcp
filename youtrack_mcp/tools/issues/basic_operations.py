@@ -17,6 +17,11 @@ import logging
 from typing import Any, Dict, Optional
 
 from youtrack_mcp.mcp_wrappers import sync_wrapper
+from youtrack_mcp.tools.initiated_by import (
+    INITIATED_BY_FIELD,
+    create_with_user_field,
+    user_field_payload,
+)
 from youtrack_mcp.utils import format_json_response
 
 logger = logging.getLogger(__name__)
@@ -98,7 +103,8 @@ class BasicOperations:
     @sync_wrapper
     def create_issue(
         self, project: str, summary: str, description: Optional[str] = None,
-        custom_fields: Optional[Dict[str, Any]] = None
+        custom_fields: Optional[Dict[str, Any]] = None,
+        initiated_by: Optional[str] = None,
     ) -> str:
         """
         Create a new issue in YouTrack.
@@ -110,6 +116,7 @@ class BasicOperations:
             summary: The issue title/summary
             description: Optional detailed description of the issue
             custom_fields: Optional dictionary of custom field names and values to set on creation (e.g., {"Assignee": "john.doe", "Priority": "Critical"})
+            initiated_by: Optional login of the person who requested the issue; set in the InitiatedBy field in the creation call itself
 
         Returns:
             JSON string with the created issue information
@@ -160,11 +167,31 @@ class BasicOperations:
 
             logger.info(f"Creating issue in project {project_id}: {summary}")
 
+            # InitiatedBy goes into the creation POST itself; resolve the user first
+            # so a bad login fails before anything is created.
+            initiator_entry, initiator_report = None, {}
+            if initiated_by:
+                try:
+                    initiator_entry, warning = user_field_payload(
+                        self.issues_api.client, project_id, INITIATED_BY_FIELD, initiated_by
+                    )
+                except ValueError as e:
+                    return format_json_response(
+                        {"error": f"initiated_by: {e} No issue was created.", "status": "error"}
+                    )
+                if warning:
+                    initiator_report["initiated_by_warning"] = warning
+
             # Call the API client to create the issue
             try:
-                issue = self.issues_api.create_issue(
-                    project_id, summary, description
+                issue, initiator_error = create_with_user_field(
+                    self.issues_api, project_id, summary, description,
+                    initiator_entry, initiated_by,
                 )
+                if initiator_error:
+                    initiator_report["initiated_by_error"] = initiator_error
+                elif initiator_entry:
+                    initiator_report["fields_set"] = {INITIATED_BY_FIELD: initiated_by}
 
                 # Check if we got an issue with an ID
                 if isinstance(issue, dict) and issue.get("error"):
@@ -187,19 +214,19 @@ class BasicOperations:
                         detailed_issue = self.issues_api.get_issue(issue_id)
 
                         if hasattr(detailed_issue, "model_dump"):
-                            return format_json_response(
-                                detailed_issue.model_dump()
-                            )
-                        else:
-                            return format_json_response(detailed_issue)
+                            detailed_issue = detailed_issue.model_dump()
+                        if isinstance(detailed_issue, dict):
+                            detailed_issue.update(initiator_report)
+                        return format_json_response(detailed_issue)
                     except Exception as e:
                         logger.warning(
                             f"Could not retrieve detailed issue: {str(e)}"
                         )
                 if hasattr(issue, "model_dump"):
-                    return format_json_response(issue.model_dump())
-                else:
-                    return format_json_response(issue)
+                    issue = issue.model_dump()
+                if isinstance(issue, dict):
+                    issue.update(initiator_report)
+                return format_json_response(issue)
             except Exception as e:
                 error_msg = str(e)
                 if hasattr(e, "response") and e.response:
@@ -525,7 +552,8 @@ class BasicOperations:
                     "project": "Project identifier (short name like 'DEMO' or ID like '0-1')",
                     "summary": "Issue title/summary (required)",
                     "description": "Detailed description of the issue (optional)",
-                    "custom_fields": "Optional dictionary of custom field names to values to set on creation (e.g., {'Assignee': 'john.doe', 'Priority': 'Critical', 'Fix versions': ['1.0', '1.1']})"
+                    "custom_fields": "Optional dictionary of custom field names to values to set on creation (e.g., {'Assignee': 'john.doe', 'Priority': 'Critical', 'Fix versions': ['1.0', '1.1']})",
+                    "initiated_by": "Optional login of the person who requested the issue; sets InitiatedBy at creation"
                 }
             },
             "update_issue": {

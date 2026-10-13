@@ -14,9 +14,10 @@ so every tool here resolves a name (or login) to a login first.
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from youtrack_mcp.api.client import YouTrackClient
+from youtrack_mcp.api.client import YouTrackAPIError, YouTrackClient
 from youtrack_mcp.api.issues import IssuesClient
 from youtrack_mcp.mcp_wrappers import sync_wrapper
+from youtrack_mcp.tools.initiated_by import user_id_for_login, user_not_allowed_hint
 from youtrack_mcp.utils import format_json_response
 
 logger = logging.getLogger(__name__)
@@ -78,17 +79,20 @@ class TeamTools:
 
     def _user_id(self, login: str) -> str:
         """Resolve a login to its YouTrack user DB id (e.g. '1-23')."""
-        u = self.client.get(f"users/{login}", params={"fields": "id,login"})
-        uid = u.get("id") if isinstance(u, dict) else None
-        if not uid:
-            raise ValueError(f"Could not resolve user id for login '{login}'.")
-        return uid
+        return user_id_for_login(self.client, login)
 
-    def _set_user_field(self, issue_id: str, field_name: str, login: str) -> None:
-        """Set a user-typed custom field (single or multi) to the given login.
+    def _set_user_field(self, issue_id: str, field_name: str, login: str) -> str:
+        """
+        Set a user-typed custom field (single or multi) on an issue to a login.
+
+        FORMAT: _set_user_field(issue_id="PROJ-123", field_name="InitiatedBy", login="sam.lee")
 
         The stock updater mishandles user fields, so we post the correct payload
-        directly: the field's own $type plus the user referenced by id.
+        directly: the field's own $type plus the user referenced by id. Raises on
+        failure with YouTrack's full error message (internal callers rely on this).
+
+        Returns:
+            JSON string with the field and the login it was set to.
         """
         uid = self._user_id(login)
         # Detect the field's concrete $type (Single/MultiUserIssueCustomField).
@@ -102,9 +106,17 @@ class TeamTools:
                 break
         if not ftype:
             raise ValueError(f"Field '{field_name}' not found on {issue_id}.")
+        if "User" not in ftype:
+            raise ValueError(f"Field '{field_name}' on {issue_id} is not a user field ({ftype}).")
         value: Any = [{"id": uid}] if "Multi" in ftype else {"id": uid}
         payload = {"customFields": [{"name": field_name, "$type": ftype, "value": value}]}
-        self.client.post(f"issues/{issue_id}", data=payload)
+        try:
+            self.client.post(f"issues/{issue_id}", data=payload)
+        except YouTrackAPIError as e:
+            raise ValueError(user_not_allowed_hint(field_name, login, e)) from e
+        return format_json_response(
+            {"status": "success", "issue": issue_id, "field": field_name, "set_to": login}
+        )
 
     @sync_wrapper
     def whois(self, name: str) -> str:

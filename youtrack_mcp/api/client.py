@@ -195,7 +195,16 @@ class YouTrackClient:
         try:
             error_data = response.json()
             if isinstance(error_data, dict) and "error" in error_data:
-                error_message = f"{error_message}: {error_data['error']}"
+                # YouTrack often sends an empty `error` and puts the real reason
+                # in `error_description` (e.g. "Value is not allowed").
+                detail = error_data.get("error") or ""
+                description = error_data.get("error_description") or ""
+                if description and description != detail:
+                    detail = f"{detail} - {description}" if detail else description
+                field = error_data.get("error_field")
+                if field and description:
+                    detail = f"{detail} (field: {field})"
+                error_message = f"{error_message}: {detail}"
         except (json.JSONDecodeError, KeyError):
             if response.content:
                 error_message = f"{error_message}: {response.content.decode('utf-8', errors='replace')}"

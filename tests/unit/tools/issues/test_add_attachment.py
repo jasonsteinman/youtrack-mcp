@@ -20,8 +20,8 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def topics(tmp_path, monkeypatch):
-    """A youtrack-uploads-like tree with one topic, and the env pointing at its inbox/outbox."""
-    root = tmp_path / "youtrack-uploads"
+    """An uploads tree with one topic, and the env pointing at its inbox/outbox."""
+    root = tmp_path / "uploads"
     for sub in ("t1/inbox", "t1/outbox", "t1/private"):
         (root / sub).mkdir(parents=True)
     monkeypatch.setenv(

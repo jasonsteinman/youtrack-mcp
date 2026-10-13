@@ -703,14 +703,15 @@ class SprintTools:
         Fast by construction: one search + one paginated activities sweep for the WHOLE
         sprint (no per-issue history calls), so cost is ~2 requests regardless of size.
 
-        FORMAT: get_stuck_tasks()                                  # current sprint, Squads B/C/D
+        FORMAT: get_stuck_tasks()                                  # current sprint, default squads
                 get_stuck_tasks(sprint="Sprint #91", squads=["Squad A"])
                 get_stuck_tasks(hours=72, exclude_stages=["Published","Backlog","OnHold"])
 
         Args:
             sprint: Sprint name (default: the board's current sprint).
             squads: Squad value(s) to include, e.g. "Squad A" or ["Squad B","Squad C"]
-                (default: Squad B, Squad C, Squad D). Pass an empty list for all squads.
+                (default: the YOUTRACK_STUCK_SQUADS env var, comma-separated; all squads
+                if unset). Pass an empty list for all squads.
             hours: Stuck threshold in hours; strictly greater than this counts (default 48).
             exclude_stages: Stages that never count as stuck
                 (default: ["Published", "Backlog"]).
@@ -723,7 +724,10 @@ class SprintTools:
         try:
             # --- normalise inputs -------------------------------------------------
             if squads is None:
-                squad_list = ["Squad B", "Squad C", "Squad D"]
+                squad_list = [
+                    s.strip() for s in os.getenv("YOUTRACK_STUCK_SQUADS", "").split(",")
+                    if s.strip()
+                ]
             elif isinstance(squads, str):
                 squad_list = [squads] if squads.strip() else []
             else:
@@ -1004,7 +1008,7 @@ class SprintTools:
                 "parameter_descriptions": {
                     "sprint": "Sprint name e.g. 'Sprint #91' (default: current sprint)",
                     "squads": "Squad(s) to include, e.g. 'Squad A' or ['Squad B','Squad C'] "
-                    "(default: Squad B/C/D; empty list = all squads)",
+                    "(default: YOUTRACK_STUCK_SQUADS env var, else all; empty list = all squads)",
                     "hours": "Stuck threshold in hours, strictly greater (default 48)",
                     "exclude_stages": "Stages that never count as stuck "
                     "(default: ['Published','Backlog'])",

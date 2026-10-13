@@ -2,7 +2,7 @@
 Composite YouTrack tools that chain several operations into one call.
 
 `create_task` creates an issue and, in one shot, optionally sets its assignee,
-reviewer, squad, priority, story points, and target sprint — using the fixed
+reviewer, initiator (InitiatedBy), squad, priority, story points, and target sprint — using the fixed
 multi-user payload for Assignee/Reviewer and the agile API for the sprint.
 Each sub-step is recorded so partial failures are visible rather than silent.
 """
@@ -18,6 +18,11 @@ from youtrack_mcp.api.projects import ProjectsClient
 from youtrack_mcp.tools.team_actions import TeamTools
 from youtrack_mcp.tools.sprints import SprintTools
 from youtrack_mcp.mcp_wrappers import sync_wrapper
+from youtrack_mcp.tools.initiated_by import (
+    INITIATED_BY_FIELD,
+    create_with_user_field,
+    user_field_payload,
+)
 from youtrack_mcp.utils import format_json_response
 
 
@@ -60,13 +65,15 @@ class CompositeTools:
         priority: Optional[str] = None,
         story_point: Optional[int] = None,
         board: str = DEFAULT_BOARD,
+        initiated_by: Optional[str] = None,
     ) -> str:
         """
-        Create a task and optionally assign it, set reviewer/squad/priority/points,
-        and move it into a sprint — all in one call.
+        Create a task and optionally assign it, set reviewer/initiator/squad/priority/
+        points, and move it into a sprint — all in one call.
 
         FORMAT: create_task(project="PROJ", summary="Investigate bug", assignee="Sam",
-                            sprint="Sprint #92", reviewer="Alex", priority="Critical")
+                            sprint="Sprint #92", reviewer="Alex", priority="Critical",
+                            initiated_by="sam.lee")
 
         Args:
             project: Project short name or id (e.g. "PROJ").
@@ -79,11 +86,16 @@ class CompositeTools:
             priority: Priority value, e.g. "Critical" (optional).
             story_point: Integer story points (optional).
             board: Agile board for the sprint (default: YOUTRACK_DEFAULT_BOARD env var).
+            initiated_by: Name or login of the person who asked for the task; set in the
+                InitiatedBy field in the creation call itself (optional). Unknown users
+                fail before anything is created; a project without the field is
+                skipped with `initiated_by_warning`.
 
         Returns:
             JSON string with the new issue id and a per-step result map.
         """
         steps: Dict[str, Any] = {}
+        fields_set: Dict[str, Any] = {}
         # --- create -------------------------------------------------------
         try:
             project_id = project
@@ -92,7 +104,27 @@ class CompositeTools:
                 if not proj:
                     return format_json_response({"error": f"Project '{project}' not found."})
                 project_id = proj.id
-            issue = self.issues_api.create_issue(project_id, summary, description)
+
+            # InitiatedBy goes into the creation POST itself. Resolve the user first
+            # so a bad login fails before anything is created.
+            initiator_entry, initiator_login = None, None
+            if initiated_by:
+                try:
+                    initiator_login = self.team._resolve_login(initiated_by)
+                    initiator_entry, warning = user_field_payload(
+                        self.client, project_id, INITIATED_BY_FIELD, initiator_login
+                    )
+                except ValueError as e:
+                    return format_json_response(
+                        {"error": f"initiated_by: {e} No task was created."}
+                    )
+                if warning:
+                    steps["initiated_by_warning"] = warning
+
+            issue, initiator_error = create_with_user_field(
+                self.issues_api, project_id, summary, description,
+                initiator_entry, initiator_login,
+            )
             db_id = getattr(issue, "id", None) or (
                 issue.get("id") if isinstance(issue, dict) else None
             )
@@ -103,6 +135,10 @@ class CompositeTools:
             info = self.client.get(f"issues/{db_id}", params={"fields": "idReadable"})
             issue_id = info.get("idReadable", db_id) if isinstance(info, dict) else db_id
             steps["created"] = issue_id
+            if initiator_error:
+                steps["initiated_by_error"] = initiator_error
+            elif initiator_entry:
+                fields_set[INITIATED_BY_FIELD] = initiator_login
         except Exception as e:
             logger.exception("create_task: creation failed")
             return format_json_response({"error": f"Could not create task: {e}"})
@@ -118,9 +154,11 @@ class CompositeTools:
         if simple:
             try:
                 self.issues_api.update_issue_custom_fields(issue_id, simple)
-                steps["fields_set"] = simple
+                fields_set.update(simple)
             except Exception as e:
                 steps["fields_error"] = str(e)
+        if fields_set:
+            steps["fields_set"] = fields_set
 
         # --- user fields via the fixed multi-user setter ------------------
         if assignee:
@@ -284,10 +322,11 @@ class CompositeTools:
         return {
             "create_task": {
                 "description": (
-                    "Create a task and optionally assign it, set reviewer/squad/priority/"
-                    "story points, and move it into a sprint — in one call. "
+                    "Create a task and optionally assign it, set reviewer/InitiatedBy/squad/"
+                    "priority/story points, and move it into a sprint — in one call. "
                     'Example: create_task(project="PROJ", summary="Investigate bug", '
-                    'assignee="Sam", sprint="Sprint #92", reviewer="Alex", priority="Critical"). '
+                    'assignee="Sam", sprint="Sprint #92", reviewer="Alex", priority="Critical", '
+                    'initiated_by="sam.lee"). '
                     "Names are resolved to logins automatically. Returns the new issue id and "
                     "a per-step result map."
                 ),
@@ -303,6 +342,7 @@ class CompositeTools:
                     "priority": "Priority value, e.g. 'Critical' (optional)",
                     "story_point": "Integer story points (optional)",
                     "board": "Agile board for the sprint (default: YOUTRACK_DEFAULT_BOARD env var)",
+                    "initiated_by": "Name or login of the person who requested the task; sets InitiatedBy at creation (optional)",
                 },
             },
             "related_issues": {

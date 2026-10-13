@@ -82,6 +82,24 @@ automatically — you don't need to know logins. Ambiguous names return candidat
 > User-typed fields (Assignee, Reviewer) are written with the correct
 > `MultiUserIssueCustomField` payload, which the upstream updater couldn't handle.
 
+### InitiatedBy (who asked for the task)
+
+When all writes run as one shared bot account, so the requester goes in the user field
+`InitiatedBy`. Pass `initiated_by` (name or login for `create_task`, login for
+`create_issue`) and it is set **in the creation call itself**:
+
+```
+create_task(project="DEMO", summary="...", initiated_by="sam.lee")
+→ {"issue": "DEMO-123", "result": {"fields_set": {"InitiatedBy": "sam.lee"}}}
+```
+
+- Unknown user → error, **nothing is created**.
+- Project has no `InitiatedBy` field → task created, `initiated_by_warning` explains the skip.
+- YouTrack rejects the value (user not in the field's allowed users) → task created
+  without it, `initiated_by_error` carries YouTrack's message.
+- On an existing issue: `_set_user_field(issue_id, "InitiatedBy", login)` returns JSON and
+  surfaces YouTrack's full error text on failure.
+
 ## 📥 Inbox & summaries
 
 | Tool | What it does | Example |

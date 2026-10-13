@@ -112,6 +112,7 @@ class Utilities:
                     "project": "Project identifier like 'DEMO' or 'PROJECT'",
                     "summary": "Title/summary for the new issue",
                     "description": "Optional detailed description of the issue",
+                    "initiated_by": "Optional login of the person who requested the issue; sets InitiatedBy at creation",
                 },
             },
             "update_issue": {
